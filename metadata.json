@@ -1,0 +1,6 @@
+{
+  "name": "GAP Semigroup Workbench",
+  "description": "In-browser GAP 4 WebAssembly Linux terminal and semigroup theory workbench with interactive Green's relations, Egg-Box explorer, and responsive mobile support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

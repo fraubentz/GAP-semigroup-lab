@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>GAP Semigroup Workbench</title>
+    <meta
+      name="description"
+      content="In-browser GAP 4 WebAssembly Linux terminal and semigroup theory workbench with interactive Green's relations, Egg-Box explorer, and responsive mobile support."
+    />
+    <meta property="og:title" content="GAP Semigroup Workbench" />
+    <meta
+      property="og:description"
+      content="In-browser GAP 4 WebAssembly Linux terminal and semigroup theory workbench with interactive Green's relations, Egg-Box explorer, and responsive mobile support."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0B0E14" />
+    <link rel="stylesheet" href="/gap/vendor/xterm.css" />
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('gap-workbench-theme');
+          var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var useDark = saved ? saved === 'dark' : prefersDark !== false;
+          if (useDark) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 dark:bg-[#0B0E14] dark:text-slate-100 antialiased selection:bg-cyan-500/30">
+    <div id="root"></div>
+    <script src="/gap/vendor/xterm.min.js"></script>
+    <script src="/gap/vendor/xterm-addon-fit.min.js"></script>
+    <script src="/gap/vendor/xterm-pty/index.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
