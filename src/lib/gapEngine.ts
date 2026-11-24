@@ -619,9 +619,19 @@ export class GapWorkbenchEngine {
     if (!data || !data.type) return;
 
     switch (data.type) {
+      case 'gap-boot-stage': {
+        if (!this.started && typeof data.stage === 'string') {
+          this.setStatus('booting', data.stage);
+          if (this.xterm) {
+            this.xterm.write(`\r\x1b[2K\x1b[2m${data.stage}\x1b[0m`);
+          }
+        }
+        break;
+      }
+
       case 'gap-bundle-status': {
         if (!this.started && this.xterm) {
-          this.xterm.write('\r\x1b[2mDownloading GAP standard library bundle…\x1b[0m');
+          this.xterm.write('\r\x1b[2K\x1b[2mDownloading GAP standard library bundle…\x1b[0m');
         }
         break;
       }
@@ -629,12 +639,12 @@ export class GapWorkbenchEngine {
       case 'gap-fetched': {
         if (typeof data.url === 'string' && !this.fetchedSet.has(data.url)) {
           this.fetchedSet.add(data.url);
-          if (/^\/gap\/(pkg|lib|grp|tst|doc|hpcgap|dev|benchmark)\//.test(data.url)) {
+          if (/(?:^|\/)gap\/(pkg|lib|grp|tst|doc|hpcgap|dev|benchmark)\//.test(data.url)) {
             this.fetchCount++;
             this.callbacks.onFetchProgress(this.fetchCount, this.manifestTotal);
             if (!this.started && this.xterm) {
               this.xterm.write(
-                `\r\x1b[2mLoading GAP… ${this.fetchCount} / ~${this.manifestTotal} modules\x1b[0m`
+                `\r\x1b[2K\x1b[2mLoading GAP… ${this.fetchCount} / ~${this.manifestTotal} modules\x1b[0m`
               );
             }
           }

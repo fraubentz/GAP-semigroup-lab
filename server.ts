@@ -656,6 +656,22 @@ async function createApp() {
     }
   });
 
+  // Serve raw gzipped gap.wasm as application/octet-stream (client decompresses via DecompressionStream)
+  // to avoid proxy Content-Encoding stripping or 32 MB uncompressed response limits on application/wasm.
+  app.get('/gap/gap.wasm.gzbin', async (_req, res) => {
+    try {
+      const { gzPath } = await ensureGapBinary('gap.wasm');
+      const gzStat = fs.statSync(gzPath);
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Content-Length', String(gzStat.size));
+      fs.createReadStream(gzPath).pipe(res);
+    } catch (err) {
+      console.warn('GAP wasm.gzbin fetch failed:', err);
+      res.status(503).send('GAP WebAssembly runtime temporarily unavailable');
+    }
+  });
+
   // Serve local /gap/* static files & lazy-cached GAP library/package files
   app.get('/gap/*', async (req, res) => {
     const rawParam = (req.params as Record<string, string>)[0] || '';

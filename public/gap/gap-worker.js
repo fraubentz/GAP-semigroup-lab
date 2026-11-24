@@ -241,6 +241,17 @@ BridgeTtyClient.prototype.onIoctlTiocgwinsz = function() {
     return [streamData[0] || 80, streamData[1] || 24];
 };
 
+self.addEventListener("error", (ev) => {
+    const msgText = ev && ev.message ? ev.message : "Unhandled worker error";
+    postMessage({ type: "gap-worker-error", error: msgText });
+});
+
+self.addEventListener("unhandledrejection", (ev) => {
+    const r = ev && ev.reason;
+    const msgText = (r && (r.stack || r.message)) ? (r.stack || r.message) : String(r || "Unhandled worker promise rejection");
+    postMessage({ type: "gap-worker-error", error: msgText });
+});
+
 onmessage = (msg) => {
     try {
         if (msg.data && msg.data.type === "gap-init") {
@@ -260,6 +271,11 @@ onmessage = (msg) => {
             try { scanUserFiles(); } catch (e) {}
             postMessage({ type: "gap-exited", code: code });
         };
+
+        postMessage({
+            type: "gap-boot-stage",
+            stage: "Downloading GAP 4 WebAssembly runtime (gap.js + gap.wasm)…"
+        });
 
         importScripts(new URL("gap-fs.js", self.location.href).href);
         importScripts(new URL("gap.js", self.location.href).href);
