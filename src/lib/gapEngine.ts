@@ -93,6 +93,9 @@ export class GapWorkbenchEngine {
   private senderActive = false;
   private sessionDead = false;
   private started = false;
+  private firstWriteSeen = false;
+  private bootTail = '';
+  private readyFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private fetchCount = 0;
   private manifestTotal = 1519;
   private fetchedSet = new Set<string>();
@@ -283,7 +286,13 @@ export class GapWorkbenchEngine {
   }
 
   public async runCodeInGap(code: string): Promise<void> {
-    if (this.shell.isActive()) {
+    if (
+      this.shell.isActive() ||
+      this.sessionDead ||
+      this.status === 'error' ||
+      this.status === 'exited' ||
+      !this.worker
+    ) {
       this.pendingCodeAfterBoot = code;
       this.shell.deactivate();
       this.startGapWorker(false);
@@ -327,6 +336,10 @@ export class GapWorkbenchEngine {
 
   private terminateWorkerOnly(): void {
     this.sessionDead = true;
+    if (this.readyFallbackTimer) {
+      clearTimeout(this.readyFallbackTimer);
+      this.readyFallbackTimer = null;
+    }
     if (this.ttyServer) {
       this.ttyServer.stop?.();
       this.ttyServer = null;
@@ -362,8 +375,14 @@ export class GapWorkbenchEngine {
 
     this.shellInputDisposable?.dispose();
     this.shellInputDisposable = null;
+    if (this.readyFallbackTimer) {
+      clearTimeout(this.readyFallbackTimer);
+      this.readyFallbackTimer = null;
+    }
     this.sessionDead = false;
     this.started = false;
+    this.firstWriteSeen = false;
+    this.bootTail = '';
     this.fetchCount = 0;
     this.fetchedSet.clear();
     this.senderActive = false;
@@ -411,24 +430,44 @@ export class GapWorkbenchEngine {
       void this.uploadFiles(priorUserFiles);
     }
 
+    const markGapReady = () => {
+      if (this.started || this.sessionDead) return;
+      this.started = true;
+      if (this.readyFallbackTimer) {
+        clearTimeout(this.readyFallbackTimer);
+        this.readyFallbackTimer = null;
+      }
+      this.setStatus('ready');
+      if (this.pendingReadAfterBoot) {
+        const script = this.pendingReadAfterBoot;
+        this.pendingReadAfterBoot = null;
+        setTimeout(() => {
+          this.paste(`Read(${gapQuote(script)});\n`);
+        }, 120);
+      } else if (this.pendingCodeAfterBoot) {
+        const code = this.pendingCodeAfterBoot;
+        this.pendingCodeAfterBoot = null;
+        setTimeout(() => {
+          this.paste(code.endsWith('\n') ? code : code + '\n');
+        }, 120);
+      }
+    };
+
+    const utf8 = new TextDecoder();
     worker.addEventListener('message', (ev: MessageEvent) => {
       const d = ev.data;
       if (d && d.ttyRequestType === 'write' && !this.started) {
-        this.started = true;
-        this.xterm?.reset();
-        this.setStatus('ready');
-        if (this.pendingReadAfterBoot) {
-          const script = this.pendingReadAfterBoot;
-          this.pendingReadAfterBoot = null;
-          setTimeout(() => {
-            this.paste(`Read(${gapQuote(script)});\n`);
-          }, 150);
-        } else if (this.pendingCodeAfterBoot) {
-          const code = this.pendingCodeAfterBoot;
-          this.pendingCodeAfterBoot = null;
-          setTimeout(() => {
-            this.paste(code.endsWith('\n') ? code : code + '\n');
-          }, 150);
+        if (!this.firstWriteSeen) {
+          this.firstWriteSeen = true;
+          this.xterm?.reset();
+          this.readyFallbackTimer = setTimeout(markGapReady, 5000);
+        }
+        if (Array.isArray(d.buf)) {
+          const textChunk = utf8.decode(new Uint8Array(d.buf), { stream: true });
+          this.bootTail = (this.bootTail + textChunk).slice(-128);
+          if (/gap>\s*$/.test(this.bootTail)) {
+            markGapReady();
+          }
         }
       }
     });

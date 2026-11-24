@@ -17,6 +17,7 @@ export function TopBar({
 }: TopBarProps) {
   const isEggBoxActive = mobilePane === 'eggbox' || activeTab === 'eggbox';
   const isExamplesActive = mobilePane === 'examples' || activeTab === 'examples';
+  const isManualActive = mobilePane === 'manual' || activeTab === 'manual';
 
   return (
     <header className="safe-top safe-x shrink-0 border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-[#0F141E]">
@@ -68,6 +69,17 @@ export function TopBar({
             }`}
           >
             Examples
+          </button>
+          <button
+            type="button"
+            onClick={() => onSelectView('manual')}
+            className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer border-b-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-500 ${
+              isManualActive
+                ? 'border-cyan-600 text-slate-900 dark:border-cyan-400 dark:text-slate-100'
+                : 'border-transparent hover:text-slate-900 dark:hover:text-slate-200'
+            }`}
+          >
+            Manual
           </button>
           <button
             type="button"

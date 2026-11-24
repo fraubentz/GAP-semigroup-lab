@@ -61,39 +61,50 @@ if not IsBound(OrderPreservingTransformationSemigroup) then
   end;
 fi;
 
+if not IsBound(SemigroupByMultiplicationTable_Toolkit) then
+  SemigroupByMultiplicationTable_Toolkit := function(tbl)
+    local m, gens, j, img, i;
+    m := Length(tbl);
+    if m = 0 then
+      Error("SemigroupByMultiplicationTable_Toolkit requires non-empty table");
+    fi;
+    gens := [];
+    for j in [1..m] do
+      img := List([1..m], i -> tbl[i][j]);
+      Add(img, j);
+      Add(gens, Transformation(img));
+    od;
+    return Semigroup(gens);
+  end;
+fi;
+
 if not IsBound(ZeroSemigroup) then
   ZeroSemigroup := function(n)
-    local tbl, i, M;
+    local tbl, i;
     tbl := List([1..n], i -> List([1..n], j -> 1));
-    M := MagmaByMultiplicationTable(tbl);
-    SetIsAssociative(M, true);
-    return M;
+    return SemigroupByMultiplicationTable_Toolkit(tbl);
   end;
 fi;
 
 if not IsBound(LeftZeroSemigroup) then
   LeftZeroSemigroup := function(n)
-    local tbl, i, M;
+    local tbl, i;
     tbl := List([1..n], i -> List([1..n], j -> i));
-    M := MagmaByMultiplicationTable(tbl);
-    SetIsAssociative(M, true);
-    return M;
+    return SemigroupByMultiplicationTable_Toolkit(tbl);
   end;
 fi;
 
 if not IsBound(RightZeroSemigroup) then
   RightZeroSemigroup := function(n)
-    local tbl, i, M;
+    local tbl, i;
     tbl := List([1..n], i -> List([1..n], j -> j));
-    M := MagmaByMultiplicationTable(tbl);
-    SetIsAssociative(M, true);
-    return M;
+    return SemigroupByMultiplicationTable_Toolkit(tbl);
   end;
 fi;
 
 if not IsBound(RectangularBand) then
   RectangularBand := function(m, n)
-    local elts, tbl, i, j, a, b, M;
+    local elts, tbl, i, j, a, b;
     elts := Cartesian([1..m], [1..n]);
     tbl := [];
     for i in [1..Length(elts)] do
@@ -104,9 +115,7 @@ if not IsBound(RectangularBand) then
         Add(tbl[i], Position(elts, [a[1], b[2]]));
       od;
     od;
-    M := MagmaByMultiplicationTable(tbl);
-    SetIsAssociative(M, true);
-    return M;
+    return SemigroupByMultiplicationTable_Toolkit(tbl);
   end;
 fi;
 
@@ -283,7 +292,7 @@ fi;
 
 if not IsBound(DiagramMonoidByParts) then
   DiagramMonoidByParts := function(n, parts)
-    local m, tbl, i, j, prod, pos, M;
+    local m, tbl, i, j, prod, pos;
     m := Length(parts);
     tbl := [];
     for i in [1..m] do
@@ -294,9 +303,7 @@ if not IsBound(DiagramMonoidByParts) then
         Add(tbl[i], pos);
       od;
     od;
-    M := MagmaByMultiplicationTable(tbl);
-    SetIsAssociative(M, true);
-    return M;
+    return SemigroupByMultiplicationTable_Toolkit(tbl);
   end;
 fi;
 
@@ -343,8 +350,8 @@ if not IsBound(TemperleyLiebMonoid) then
     if n > 4 then
       Error("Pure-GAP TemperleyLiebMonoid supports n <= 4");
     fi;
-    # Clockwise boundary order: 1..n, then -n..-1
-    ringOrder := Concatenation([1..n], Reversed([-n..-1]));
+    # Clockwise boundary order around rectangle: top 1..n, then bottom right-to-left -n..-1
+    ringOrder := Concatenation([1..n], [-n..-1]);
     isNonCrossing := function(part)
       local pairs, idx, b, i, j, a1, b1, a2, b2;
       pairs := List(part, function(blk)
@@ -650,14 +657,24 @@ if not IsBound(IsTransversalOfPartition) then
   end;
 fi;
 
+if not IsBound(NormalizePermGroup_Toolkit) then
+  NormalizePermGroup_Toolkit := function(G)
+    if IsPermGroup(G) then
+      return G;
+    fi;
+    return Image(IsomorphismPermGroup(G));
+  end;
+fi;
+
 if not IsBound(HasKUT) then
   HasKUT := function(G, n, k)
-    local parts, subsets, A, P;
+    local PG, parts, subsets, A, P;
+    PG := NormalizePermGroup_Toolkit(G);
     parts := PartitionsSet([1..n], k);
     subsets := Combinations([1..n], k);
     for A in subsets do
       for P in parts do
-        if not ForAny(G, g -> IsTransversalOfPartition(OnSets(A, g), P)) then
+        if not ForAny(PG, g -> IsTransversalOfPartition(OnSets(A, g), P)) then
           return false;
         fi;
       od;
@@ -668,11 +685,12 @@ fi;
 
 if not IsBound(HasKET) then
   HasKET := function(G, n, k)
-    local parts, subsets, A, P;
+    local PG, parts, subsets, A, P;
+    PG := NormalizePermGroup_Toolkit(G);
     parts := PartitionsSet([1..n], k);
     subsets := Combinations([1..n], k);
     for A in subsets do
-      if ForAll(parts, P -> ForAny(G, g -> IsTransversalOfPartition(OnSets(A, g), P))) then
+      if ForAll(parts, P -> ForAny(PG, g -> IsTransversalOfPartition(OnSets(A, g), P))) then
         return rec(hasKET := true, witness := A);
       fi;
     od;
@@ -682,10 +700,11 @@ fi;
 
 if not IsBound(TransversalRegularityTest) then
   TransversalRegularityTest := function(G, n, k)
-    local ket, kut, gens, img, i, b, P, t, S, reg;
-    kut := HasKUT(G, n, k);
-    ket := HasKET(G, n, k);
-    Print("Group order: ", Size(G), ", degree: ", n, ", k: ", k, "\n");
+    local PG, ket, kut, gens, img, i, b, P, t, S, reg;
+    PG := NormalizePermGroup_Toolkit(G);
+    kut := HasKUT(PG, n, k);
+    ket := HasKET(PG, n, k);
+    Print("Group order: ", Size(PG), ", degree: ", n, ", k: ", k, "\n");
     Print(k, "-ut (universal transversal): ", kut, "\n");
     Print(k, "-et (existential transversal): ", ket.hasKET);
     if ket.hasKET then
@@ -701,7 +720,7 @@ if not IsBound(TransversalRegularityTest) then
         od;
       od;
       t := Transformation(img);
-      gens := Concatenation(List(GeneratorsOfGroup(G), g -> AsTransformation(g, n)), [t]);
+      gens := Concatenation(List(GeneratorsOfGroup(PG), g -> AsTransformation(g, n)), [t]);
       S := Semigroup(gens);
       reg := IsRegularSemigroup(S);
       Print("Regularity of <G, t> for witness transversal t: ", reg, "\n");
@@ -787,7 +806,172 @@ if not IsBound(InnerTranslationDigraphSummary) then
 fi;
 
 # ----------------------------------------------------------------------------
-# 8. SemigroupSummary & InspectSemigroup (JSON bridge to Egg-Box Visualizer)
+# 8. Pure-GAP Fallbacks for Semigroup Properties & Egg-Box Display
+#    (Installed cleanly once so core GAP handles operations normally supplied
+#     by the optional Semigroups package)
+# ----------------------------------------------------------------------------
+
+if not IsBound(TOOLKIT_METHODS_INSTALLED) then
+  TOOLKIT_METHODS_INSTALLED := true;
+
+  InstallMethod(IsBand, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      return ForAll(Elements(S), x -> x * x = x);
+    end);
+
+  InstallMethod(IsCommutativeSemigroup, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      local gens, i, j;
+      gens := GeneratorsOfSemigroup(S);
+      for i in [1..Length(gens)] do
+        for j in [i+1..Length(gens)] do
+          if gens[i] * gens[j] <> gens[j] * gens[i] then
+            return false;
+          fi;
+        od;
+      od;
+      return true;
+    end);
+
+  InstallMethod(IsSemilattice, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      return IsBand(S) and IsCommutativeSemigroup(S);
+    end);
+
+  if not IsBoundGlobal("IsSemigroupWithClosedIdempotents") then
+    DeclareProperty("IsSemigroupWithClosedIdempotents", IsSemigroup);
+  fi;
+
+  InstallMethod(ValueGlobal("IsSemigroupWithClosedIdempotents"),
+    "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      local idems, e, f;
+      idems := Idempotents(S);
+      for e in idems do
+        for f in idems do
+          if (e * f) * (e * f) <> e * f then
+            return false;
+          fi;
+        od;
+      od;
+      return true;
+    end);
+
+  InstallMethod(IsOrthodoxSemigroup, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      local idems, e, f;
+      if not IsRegularSemigroup(S) then
+        return false;
+      fi;
+      idems := Idempotents(S);
+      for e in idems do
+        for f in idems do
+          if (e * f) * (e * f) <> e * f then
+            return false;
+          fi;
+        od;
+      od;
+      return true;
+    end);
+
+  InstallMethod(IsMonoidAsSemigroup, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      local gens, e;
+      gens := GeneratorsOfSemigroup(S);
+      for e in Idempotents(S) do
+        if ForAll(gens, g -> e * g = g and g * e = g) then
+          return true;
+        fi;
+      od;
+      return false;
+    end);
+
+  InstallMethod(IsGroupAsSemigroup, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      return IsRegularSemigroup(S) and Length(Idempotents(S)) = 1;
+    end);
+
+  InstallMethod(IsCompletelyRegularSemigroup, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      return ForAll(GreensHClasses(S), h -> IsGroupHClass(h));
+    end);
+
+  InstallMethod(IsCliffordSemigroup, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      local idems, elts, e, x;
+      if not IsInverseSemigroup(S) then
+        return false;
+      fi;
+      idems := Idempotents(S);
+      elts := Elements(S);
+      for e in idems do
+        for x in elts do
+          if e * x <> x * e then
+            return false;
+          fi;
+        od;
+      od;
+      return true;
+    end);
+
+  InstallMethod(IsIdempotentGenerated, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup],
+    function(S)
+      local idems;
+      idems := Idempotents(S);
+      if Length(idems) = 0 then
+        return false;
+      fi;
+      return Size(Semigroup(idems)) = Size(S);
+    end);
+
+  DisplayEggBoxesOfSemigroup_Toolkit := function(S)
+    local dclasses, dIdx, D, rclasses, lclasses, egg, rIdx, lIdx, H, cellStr;
+    dclasses := GreensDClasses(S);
+    for dIdx in [1..Length(dclasses)] do
+      D := dclasses[dIdx];
+      rclasses := GreensRClasses(D);
+      lclasses := GreensLClasses(D);
+      egg := EggBoxOfDClass(D);
+      Print("D-class ", dIdx, " (|D|=", Size(D), ", ", Length(rclasses), "x", Length(lclasses),
+            ", regular=", IsRegularDClass(D), "):\n");
+      for rIdx in [1..Length(rclasses)] do
+        Print("  [ ");
+        for lIdx in [1..Length(lclasses)] do
+          H := egg[rIdx][lIdx];
+          if IsGroupHClass(H) then
+            cellStr := Concatenation("*", String(Size(H)));
+          else
+            cellStr := String(Size(H));
+          fi;
+          Print(cellStr);
+          if lIdx < Length(lclasses) then
+            Print(" | ");
+          fi;
+        od;
+        Print(" ]\n");
+      od;
+    od;
+  end;
+
+  InstallMethod(DisplayEggBoxesOfSemigroup, "pure-GAP fallback for finite semigroups",
+    [IsSemigroup], DisplayEggBoxesOfSemigroup_Toolkit);
+
+  InstallMethod(DisplayEggBoxesOfSemigroup, "pure-GAP fallback for transformation semigroups",
+    [IsTransformationSemigroup], 100, DisplayEggBoxesOfSemigroup_Toolkit);
+fi;
+
+# ----------------------------------------------------------------------------
+# 9. SemigroupSummary & InspectSemigroup (JSON bridge to Egg-Box Visualizer)
 # ----------------------------------------------------------------------------
 
 if not IsBound(SemigroupSummary) then

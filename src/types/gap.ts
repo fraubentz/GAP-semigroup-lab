@@ -6,7 +6,7 @@ export type EngineStatus =
   | 'unsupported'
   | 'error';
 
-export type WorkspaceTab = 'eggbox' | 'examples' | 'editor' | 'files';
+export type WorkspaceTab = 'eggbox' | 'examples' | 'manual' | 'editor' | 'files';
 
 export type MobilePane = 'terminal' | WorkspaceTab;
 

@@ -48,11 +48,11 @@ export const GAP_EXAMPLES: GapExample[] = [
     title: 'Transversal Properties (k-et & k-ut)',
     category: 'bentz',
     summary:
-      'Tests A_4 on 4 points for the 2-universal and 2-existential transversal properties and verifies regularity of <A_4, t>.',
+      'Tests A_4 and C_4 on 4 points for the 2-universal and 2-existential transversal properties and verifies regularity of <G, t>.',
     code: [
       'Read("semigroups_toolkit.g");;',
       'TransversalRegularityTest(AlternatingGroup(4), 4, 2);',
-      'TransversalRegularityTest(CyclicGroup(4), 4, 2);',
+      'TransversalRegularityTest(CyclicGroup(IsPermGroup, 4), 4, 2);',
     ].join('\n'),
   },
   {
@@ -153,12 +153,14 @@ export const GAP_EXAMPLES: GapExample[] = [
     title: 'Rees 0-Matrix Semigroup',
     category: 'semigroups',
     summary:
-      'Defines a Rees 0-matrix semigroup over S_3 with a custom sandwich matrix.',
+      'Defines a Rees 0-matrix semigroup over S_3 with a custom sandwich matrix and visualizes its Egg-Box diagram.',
     code: [
+      'Read("semigroups_toolkit.g");;',
       'G := SymmetricGroup(3);;',
       'P := [[(), (1,2)], [0, (1,2,3)]];;',
       'R := ReesZeroMatrixSemigroup(G, P);;',
       'DisplayEggBoxesOfSemigroup(R);',
+      'InspectSemigroup(R, "Rees 0-Matrix Semigroup M^0[S_3; P]");',
     ].join('\n'),
   },
   {
@@ -167,13 +169,13 @@ export const GAP_EXAMPLES: GapExample[] = [
     category: 'packages',
     packages: ['smallsemi'],
     summary:
-      'Loads the Smallsemi database and counts inverse vs commutative semigroups of order 4.',
+      'Loads the Smallsemi database and filters all 126 semigroups of order 4 for inverse semigroups.',
     code: [
       'LoadPackage("smallsemi");;',
       'Print("Total order 4: ", NrSmallSemigroups(4), "\\n");',
-      'inv := AllSmallSemigroups(4, IsInverseSemigroup, true);;',
+      'inv := Filtered(AllSmallSemigroups(4), IsInverseSemigroup);;',
       'Print("Inverse order 4: ", Length(inv), "\\n");',
-      'List(inv, IdSmallSemigroup);',
+      'Print("IDs: ", List(inv, IdSmallSemigroup), "\\n");',
     ].join('\n'),
   },
   {
@@ -188,7 +190,7 @@ export const GAP_EXAMPLES: GapExample[] = [
       'S := NumericalSemigroup(5, 7, 11);;',
       'Print("Frobenius: ", FrobeniusNumber(S), ", Genus: ", Genus(S), "\\n");',
       'Print("Gaps: ", GapsOfNumericalSemigroup(S), "\\n");',
-      'AperyList(S);',
+      'Print("Apery list: ", AperyList(S), "\\n");',
     ].join('\n'),
   },
   {
@@ -199,11 +201,13 @@ export const GAP_EXAMPLES: GapExample[] = [
     summary:
       'Constructs a deterministic finite automaton and inspects its transition semigroup.',
     code: [
+      'Read("semigroups_toolkit.g");;',
       'LoadPackage("automata");;',
       'A := Automaton("det", 3, 2, [[2, 3, 1], [1, 2, 2]], [1], [3]);;',
       'T := TransitionSemigroup(A);;',
       'Print("Transition semigroup order: ", Size(T), "\\n");',
       'DisplayEggBoxesOfSemigroup(T);',
+      'InspectSemigroup(T, "Automaton Transition Semigroup");',
     ].join('\n'),
   },
   {
@@ -218,7 +222,7 @@ export const GAP_EXAMPLES: GapExample[] = [
     title: 'Groups of Order 12',
     category: 'groups',
     summary: 'Classifies all non-isomorphic groups of order 12 via StructureDescription.',
-    code: 'List(AllSmallGroups(12), StructureDescription);',
+    code: 'Print(List(AllSmallGroups(12), StructureDescription), "\\n");',
   },
   {
     id: 'fp-icosahedral',
@@ -229,7 +233,7 @@ export const GAP_EXAMPLES: GapExample[] = [
     code: [
       'F := FreeGroup("a", "b");;',
       'G := F / [F.1^2, F.2^3, (F.1*F.2)^5];;',
-      'Size(G);',
+      'Print("Order of <a,b | a^2, b^3, (ab)^5>: ", Size(G), "\\n");',
     ].join('\n'),
   },
 ];

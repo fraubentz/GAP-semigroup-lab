@@ -4,6 +4,7 @@ import { EggBoxPanel } from './components/EggBoxPanel';
 import { ExamplesPanel } from './components/ExamplesPanel';
 import { FilesPanel } from './components/FilesPanel';
 import { HeadersModal } from './components/HeadersModal';
+import { ManualPanel } from './components/ManualPanel';
 import { TerminalPane } from './components/TerminalPane';
 import { TopBar } from './components/TopBar';
 import { GapWorkbenchEngine, gapQuote } from './lib/gapEngine';
@@ -165,6 +166,7 @@ export default function App() {
   const tabs: Array<{ id: WorkspaceTab; label: string }> = [
     { id: 'eggbox', label: 'Egg-Box' },
     { id: 'examples', label: 'Examples' },
+    { id: 'manual', label: 'Manual' },
     { id: 'editor', label: 'Editor' },
     { id: 'files', label: `Files (${files.size})` },
   ];
@@ -173,6 +175,7 @@ export default function App() {
     { id: 'terminal', label: 'Terminal' },
     { id: 'eggbox', label: 'Egg-Box' },
     { id: 'examples', label: 'Examples' },
+    { id: 'manual', label: 'Manual' },
     { id: 'editor', label: 'Editor' },
     { id: 'files', label: 'Files' },
   ];
@@ -183,6 +186,8 @@ export default function App() {
         return <EggBoxPanel inspection={inspection} onRunSnippet={handleRunCode} />;
       case 'examples':
         return <ExamplesPanel onInsert={handleInsertCode} onRun={handleRunCode} />;
+      case 'manual':
+        return <ManualPanel onInsert={handleInsertCode} onRun={handleRunCode} />;
       case 'editor':
         return (
           <EditorPanel
