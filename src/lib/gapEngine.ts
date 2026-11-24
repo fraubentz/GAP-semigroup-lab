@@ -34,14 +34,21 @@ interface PtySlave {
     ((op: 'TIOCGWINSZ') => [number, number]);
 }
 
+interface PtyMaster {
+  dispose: () => void;
+}
+
+interface PtyTtyServer {
+  start: (worker: Worker, onCustomMessage: (ev: MessageEvent) => void) => void;
+  stop?: () => void;
+}
+
 declare global {
   interface Window {
     Terminal: new (opts: Record<string, unknown>) => XtermInstance;
     FitAddon: { FitAddon: new () => FitAddonInstance };
-    openpty: () => { master: unknown; slave: PtySlave };
-    TtyServer: new (slave: PtySlave) => {
-      start: (worker: Worker, onCustomMessage: (ev: MessageEvent) => void) => void;
-    };
+    openpty: () => { master: PtyMaster; slave: PtySlave };
+    TtyServer: new (slave: PtySlave) => PtyTtyServer;
   }
 }
 
@@ -94,6 +101,8 @@ export class GapWorkbenchEngine {
   private pendingCodeAfterBoot: string | null = null;
   private shell: LinuxShellController;
   private shellInputDisposable: { dispose: () => void } | null = null;
+  private ptyMaster: PtyMaster | null = null;
+  private ttyServer: PtyTtyServer | null = null;
   private status: EngineStatus = 'booting';
   private bridgeSid: string | null = null;
   private bridgeAbort: AbortController | null = null;
@@ -295,6 +304,7 @@ export class GapWorkbenchEngine {
     this.emitFiles();
     this.setStatus('shell');
     if (this.xterm) {
+      this.shellInputDisposable?.dispose();
       this.shellInputDisposable = this.xterm.onData((chunk) => {
         this.shell.handleInput(chunk);
       });
@@ -316,6 +326,14 @@ export class GapWorkbenchEngine {
 
   private terminateWorkerOnly(): void {
     this.sessionDead = true;
+    if (this.ttyServer) {
+      this.ttyServer.stop?.();
+      this.ttyServer = null;
+    }
+    if (this.ptyMaster) {
+      this.ptyMaster.dispose();
+      this.ptyMaster = null;
+    }
     if (this.bridgeAbort) {
       this.bridgeAbort.abort();
       this.bridgeAbort = null;
@@ -355,7 +373,9 @@ export class GapWorkbenchEngine {
 
     this.setStatus('booting', 'Initializing GAP 4 WebAssembly kernel…');
 
+    this.ptyMaster?.dispose();
     const { master, slave } = window.openpty();
+    this.ptyMaster = master;
     this.xterm!.loadAddon(master);
 
     const useSab = typeof SharedArrayBuffer !== 'undefined' && window.crossOriginIsolated;
@@ -419,8 +439,10 @@ export class GapWorkbenchEngine {
 
     if (useSab) {
       const ttyServer = new window.TtyServer(slave);
+      this.ttyServer = ttyServer;
       ttyServer.start(worker, (ev: MessageEvent) => this.handleWorkerMessage(ev));
     } else {
+      this.ttyServer = null;
       this.startBridgeTtyServer(slave, worker, this.bridgeSid!);
     }
 
@@ -712,10 +734,13 @@ export class GapWorkbenchEngine {
         }
         this.emitFiles();
         this.setStatus('shell');
-        this.shellInputDisposable = this.xterm!.onData((chunk) => {
-          this.shell.handleInput(chunk);
-        });
-        this.shell.activate(true);
+        if (this.xterm) {
+          this.shellInputDisposable?.dispose();
+          this.shellInputDisposable = this.xterm.onData((chunk) => {
+            this.shell.handleInput(chunk);
+          });
+          this.shell.activate(true);
+        }
         break;
       }
     }
