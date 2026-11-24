@@ -183,15 +183,20 @@ self.Module.preRun.push(function() {
                             return;
                         }
 
-                        const response = await fetch(fetchPath);
-                        if (!response.ok) {
-                            throw new Error("Failed to fetch startup file " + fetchPath + ": " + response.status);
+                        try {
+                            const response = await fetch(fetchPath);
+                            if (!response.ok) {
+                                console.warn("Skipping unavailable startup file " + fetchPath + ": " + response.status);
+                                return;
+                            }
+                            const buffer = await response.arrayBuffer();
+                            const data = new Uint8Array(buffer);
+                            FS.writeFile(finalAppPath, data);
+                            FS.writeFile(idbfsPath, data);
+                            needsSave = true;
+                        } catch (fetchErr) {
+                            console.warn("Skipping startup file " + fetchPath + ":", fetchErr);
                         }
-                        const buffer = await response.arrayBuffer();
-                        const data = new Uint8Array(buffer);
-                        FS.writeFile(finalAppPath, data);
-                        FS.writeFile(idbfsPath, data);
-                        needsSave = true;
                     } else {
                         var parts = appPath.split('/');
                         var fileName = parts.pop();

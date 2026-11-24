@@ -1,10 +1,16 @@
+import { execFile } from 'child_process';
 import express from 'express';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import http from 'http';
 import path from 'path';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { fileURLToPath } from 'url';
+import { promisify } from 'util';
 import zlib from 'zlib';
+
+const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +22,9 @@ const GAP_PUBLIC_DIR = path.resolve(PUBLIC_DIR, 'gap');
 const CACHE_DIR = path.resolve(__dirname, '.gap-cache');
 const DIST_DIR = path.resolve(__dirname, 'dist');
 const UPSTREAM_BASE = 'https://raw.githubusercontent.com/fraubentz/gap-in-the-browser/gh-pages';
+const GAP_BINARY_UPSTREAM = 'https://raw.githubusercontent.com/fraubentz/GAP-semigroup-lab/main/public/gap';
+const SEMIGROUPS_TARBALL_URL =
+  'https://github.com/semigroups/Semigroups/releases/download/v5.7.1/semigroups-5.7.1.tar.gz';
 
 const ALLOWED_GAP_PREFIXES = new Set([
   'lib',
@@ -56,6 +65,89 @@ async function loadGapMetadata(): Promise<void> {
 }
 
 const inflightFetches = new Map<string, Promise<Buffer>>();
+const inflightBinaryFetches = new Map<string, Promise<string>>();
+let semigroupsPromise: Promise<void> | null = null;
+
+async function ensureSemigroupsPackage(): Promise<void> {
+  const pkgDir = path.join(CACHE_DIR, 'pkg', 'semigroups');
+  const marker = path.join(pkgDir, 'PackageInfo.g');
+  try {
+    await fsp.access(marker);
+    return;
+  } catch {
+    // Not extracted yet
+  }
+
+  if (semigroupsPromise) {
+    return semigroupsPromise;
+  }
+
+  semigroupsPromise = (async () => {
+    await fsp.mkdir(path.join(CACHE_DIR, 'pkg'), { recursive: true });
+    const tgzPath = path.join(CACHE_DIR, '_semigroups-5.7.1.tar.gz.tmp');
+    const extractTmpDir = path.join(CACHE_DIR, 'pkg', '_semigroups_tmp');
+
+    const res = await fetch(SEMIGROUPS_TARBALL_URL, { signal: AbortSignal.timeout(120000) });
+    if (!res.ok || !res.body) {
+      throw new Error(`Failed to download Semigroups package (${res.status})`);
+    }
+    await pipeline(
+      Readable.fromWeb(res.body as unknown as import('stream/web').ReadableStream),
+      fs.createWriteStream(tgzPath)
+    );
+
+    await fsp.rm(extractTmpDir, { recursive: true, force: true });
+    await fsp.mkdir(extractTmpDir, { recursive: true });
+    await execFileAsync('tar', ['-xzf', tgzPath, '--strip-components=1', '-C', extractTmpDir]);
+    await fsp.rm(tgzPath, { force: true });
+    await fsp.rm(pkgDir, { recursive: true, force: true });
+    await fsp.rename(extractTmpDir, pkgDir);
+  })();
+
+  try {
+    await semigroupsPromise;
+  } finally {
+    semigroupsPromise = null;
+  }
+}
+
+async function ensureGapBinary(name: 'gap.js' | 'gap.wasm'): Promise<string> {
+  const cachedPath = path.join(CACHE_DIR, name);
+  try {
+    const st = await fsp.stat(cachedPath);
+    if (st.isFile() && st.size > 0) {
+      return cachedPath;
+    }
+  } catch {
+    // Cache miss
+  }
+
+  const existing = inflightBinaryFetches.get(name);
+  if (existing) return existing;
+
+  const task = (async () => {
+    await fsp.mkdir(CACHE_DIR, { recursive: true });
+    const url = `${GAP_BINARY_UPSTREAM}/${name}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(180000) });
+    if (!res.ok || !res.body) {
+      throw new Error(`Upstream fetch failed (${res.status}) for ${name}`);
+    }
+    const tmpPath = `${cachedPath}.tmp`;
+    await pipeline(
+      Readable.fromWeb(res.body as unknown as import('stream/web').ReadableStream),
+      fs.createWriteStream(tmpPath)
+    );
+    await fsp.rename(tmpPath, cachedPath);
+    return cachedPath;
+  })();
+
+  inflightBinaryFetches.set(name, task);
+  try {
+    return await task;
+  } finally {
+    inflightBinaryFetches.delete(name);
+  }
+}
 
 function isAllowedGapPath(relPath: string): boolean {
   if (!relPath || relPath.includes('..') || relPath.startsWith('/')) return false;
@@ -72,7 +164,15 @@ async function fetchAndCacheGapFile(relPath: string): Promise<Buffer> {
     throw new Error(`Disallowed GAP asset path: ${relPath}`);
   }
 
-  const resolvedCachePath = path.resolve(CACHE_DIR, relPath);
+  const normalizedRel = relPath.startsWith('pkg/semigrp/')
+    ? `pkg/semigroups/${relPath.slice('pkg/semigrp/'.length)}`
+    : relPath;
+
+  if (normalizedRel.startsWith('pkg/semigroups/')) {
+    await ensureSemigroupsPackage();
+  }
+
+  const resolvedCachePath = path.resolve(CACHE_DIR, normalizedRel);
   if (!resolvedCachePath.startsWith(CACHE_DIR + path.sep)) {
     throw new Error('Path traversal blocked');
   }
@@ -83,15 +183,15 @@ async function fetchAndCacheGapFile(relPath: string): Promise<Buffer> {
     // Cache miss — deduplicate concurrent fetches for the same file
   }
 
-  const existing = inflightFetches.get(relPath);
+  const existing = inflightFetches.get(normalizedRel);
   if (existing) return existing;
 
   const task = (async () => {
-    const encoded = relPath.split('/').map(encodeURIComponent).join('/');
+    const encoded = normalizedRel.split('/').map(encodeURIComponent).join('/');
     const url = `${UPSTREAM_BASE}/${encoded}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
     if (!res.ok) {
-      throw new Error(`Upstream fetch failed (${res.status}) for ${relPath}`);
+      throw new Error(`Upstream fetch failed (${res.status}) for ${normalizedRel}`);
     }
     const arrayBuf = await res.arrayBuffer();
     const buf = Buffer.from(arrayBuf);
@@ -100,11 +200,11 @@ async function fetchAndCacheGapFile(relPath: string): Promise<Buffer> {
     return buf;
   })();
 
-  inflightFetches.set(relPath, task);
+  inflightFetches.set(normalizedRel, task);
   try {
     return await task;
   } finally {
-    inflightFetches.delete(relPath);
+    inflightFetches.delete(normalizedRel);
   }
 }
 
@@ -125,8 +225,11 @@ async function ensureStartupBundle(): Promise<string> {
 
   startupBundlePromise = (async () => {
     await fsp.mkdir(CACHE_DIR, { recursive: true });
+    await ensureSemigroupsPackage().catch((err) => {
+      console.warn('Semigroups package pre-fetch warning:', err);
+    });
     const filesMap: Record<string, string> = {};
-    const batchSize = 32;
+    const batchSize = 16;
 
     for (let i = 0; i < startupManifestList.length; i += batchSize) {
       const batch = startupManifestList.slice(i, i + batchSize);
@@ -194,7 +297,13 @@ function getContentType(filePath: string): string {
 async function createApp() {
   await loadGapMetadata();
 
-  // Pre-warm startup bundle in the background without blocking server boot
+  // Pre-warm startup bundle and GAP wasm binaries in the background without blocking server boot
+  void ensureGapBinary('gap.js').catch((err) => {
+    console.warn('Background gap.js prewarm warning:', err);
+  });
+  void ensureGapBinary('gap.wasm').catch((err) => {
+    console.warn('Background gap.wasm prewarm warning:', err);
+  });
   if (startupManifestList.length > 0) {
     void ensureStartupBundle().catch((err) => {
       console.warn('Background GAP startup bundle prewarm warning:', err);
@@ -253,6 +362,252 @@ async function createApp() {
     });
   });
 
+  // Sync-XHR PTY bridge for environments without SharedArrayBuffer (e.g. unisolated iframes)
+  interface BridgeUploadItem {
+    name: string;
+    dataBase64: string;
+  }
+  interface BridgePendingReq {
+    reqId: string;
+    req: unknown;
+    dispatched: boolean;
+    resolve?: (payload: { streamData: number[]; uploads: BridgeUploadItem[]; closed?: boolean }) => void;
+  }
+  interface BridgeSession {
+    lastSeen: number;
+    closed: boolean;
+    pendingReqs: BridgePendingReq[];
+    completedReqs: Map<string, { streamData: number[]; uploads: BridgeUploadItem[] }>;
+    nextWaiter: ((payload: { reqId: string; req: unknown } | null) => void) | null;
+    uploads: BridgeUploadItem[];
+  }
+
+  const bridgeSessions = new Map<string, BridgeSession>();
+
+  const getOrCreateBridgeSession = (sid: string): BridgeSession => {
+    let s = bridgeSessions.get(sid);
+    if (!s) {
+      s = {
+        lastSeen: Date.now(),
+        closed: false,
+        pendingReqs: [],
+        completedReqs: new Map(),
+        nextWaiter: null,
+        uploads: [],
+      };
+      bridgeSessions.set(sid, s);
+    }
+    s.lastSeen = Date.now();
+    return s;
+  };
+
+  setInterval(() => {
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    for (const [sid, s] of bridgeSessions.entries()) {
+      if (s.lastSeen < cutoff) {
+        s.closed = true;
+        s.nextWaiter?.(null);
+        for (const p of s.pendingReqs) {
+          p.resolve?.({ streamData: [], uploads: [], closed: true });
+        }
+        bridgeSessions.delete(sid);
+      }
+    }
+  }, 60_000).unref();
+
+  app.use('/api/tty-bridge', express.json({ limit: '50mb' }));
+
+  app.post('/api/tty-bridge/req', async (req, res) => {
+    const { sid, reqId, req: ttyReq } = (req.body || {}) as {
+      sid?: string;
+      reqId?: string;
+      req?: unknown;
+    };
+    if (!sid || !reqId || !ttyReq) {
+      res.status(400).json({ error: 'Invalid bridge request' });
+      return;
+    }
+    const session = getOrCreateBridgeSession(sid);
+    if (session.closed) {
+      res.json({ closed: true });
+      return;
+    }
+
+    const completed = session.completedReqs.get(reqId);
+    if (completed) {
+      session.completedReqs.delete(reqId);
+      res.json(completed);
+      return;
+    }
+
+    let entry = session.pendingReqs.find((p) => p.reqId === reqId);
+    if (!entry) {
+      entry = { reqId, req: ttyReq, dispatched: false };
+      session.pendingReqs.push(entry);
+    }
+
+    if (!entry.dispatched && session.nextWaiter) {
+      entry.dispatched = true;
+      const waiter = session.nextWaiter;
+      session.nextWaiter = null;
+      waiter({ reqId: entry.reqId, req: entry.req });
+    }
+
+    const result = await new Promise<{
+      retry?: boolean;
+      closed?: boolean;
+      streamData?: number[];
+      uploads?: BridgeUploadItem[];
+    }>((resolve) => {
+      const timer = setTimeout(() => {
+        if (entry && entry.resolve === onResolve) {
+          entry.resolve = undefined;
+        }
+        resolve({ retry: true });
+      }, 15_000);
+
+      const onResolve = (payload: { streamData: number[]; uploads: BridgeUploadItem[]; closed?: boolean }) => {
+        clearTimeout(timer);
+        resolve(payload);
+      };
+
+      entry!.resolve = onResolve;
+
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          clearTimeout(timer);
+          if (entry && entry.resolve === onResolve) {
+            entry.resolve = undefined;
+          }
+        }
+      });
+    });
+
+    res.json(result);
+  });
+
+  app.post('/api/tty-bridge/next', async (req, res) => {
+    const { sid } = (req.body || {}) as { sid?: string };
+    if (!sid) {
+      res.status(400).json({ error: 'Missing sid' });
+      return;
+    }
+    const session = getOrCreateBridgeSession(sid);
+    if (session.closed) {
+      res.json({ closed: true });
+      return;
+    }
+
+    const pending = session.pendingReqs.find((p) => !p.dispatched);
+    if (pending) {
+      pending.dispatched = true;
+      res.json({ reqId: pending.reqId, req: pending.req });
+      return;
+    }
+
+    const nextReq = await new Promise<{ reqId: string; req: unknown } | null>((resolve) => {
+      const timer = setTimeout(() => {
+        if (session.nextWaiter === onWait) {
+          session.nextWaiter = null;
+        }
+        resolve(null);
+      }, 20_000);
+
+      const onWait = (payload: { reqId: string; req: unknown } | null) => {
+        clearTimeout(timer);
+        resolve(payload);
+      };
+
+      if (session.nextWaiter) {
+        session.nextWaiter(null);
+      }
+      session.nextWaiter = onWait;
+
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          clearTimeout(timer);
+          if (session.nextWaiter === onWait) {
+            session.nextWaiter = null;
+          }
+        }
+      });
+    });
+
+    if (session.closed) {
+      res.json({ closed: true });
+      return;
+    }
+    res.json(nextReq ?? { req: null });
+  });
+
+  app.post('/api/tty-bridge/res', (req, res) => {
+    const { sid, reqId, streamData } = (req.body || {}) as {
+      sid?: string;
+      reqId?: string;
+      streamData?: number[];
+    };
+    if (!sid || !reqId) {
+      res.status(400).json({ error: 'Missing sid or reqId' });
+      return;
+    }
+    const session = bridgeSessions.get(sid);
+    if (!session || session.closed) {
+      res.json({ ok: false });
+      return;
+    }
+    session.lastSeen = Date.now();
+    const uploads = session.uploads.splice(0);
+    const payload = { streamData: Array.isArray(streamData) ? streamData : [], uploads };
+    const idx = session.pendingReqs.findIndex((p) => p.reqId === reqId);
+    if (idx !== -1) {
+      const [entry] = session.pendingReqs.splice(idx, 1);
+      if (entry.resolve) {
+        entry.resolve(payload);
+      } else {
+        session.completedReqs.set(reqId, payload);
+      }
+    } else {
+      session.completedReqs.set(reqId, payload);
+    }
+    res.json({ ok: true });
+  });
+
+  app.post('/api/tty-bridge/upload', (req, res) => {
+    const { sid, files } = (req.body || {}) as {
+      sid?: string;
+      files?: BridgeUploadItem[];
+    };
+    if (!sid || !Array.isArray(files)) {
+      res.status(400).json({ error: 'Invalid upload payload' });
+      return;
+    }
+    const session = getOrCreateBridgeSession(sid);
+    for (const f of files) {
+      if (f && typeof f.name === 'string' && typeof f.dataBase64 === 'string') {
+        session.uploads.push(f);
+      }
+    }
+    res.json({ ok: true });
+  });
+
+  app.post('/api/tty-bridge/close', (req, res) => {
+    const { sid } = (req.body || {}) as { sid?: string };
+    if (sid) {
+      const session = bridgeSessions.get(sid);
+      if (session) {
+        session.closed = true;
+        session.nextWaiter?.(null);
+        session.nextWaiter = null;
+        for (const p of session.pendingReqs) {
+          p.resolve?.({ streamData: [], uploads: [], closed: true });
+        }
+        session.pendingReqs.length = 0;
+        setTimeout(() => bridgeSessions.delete(sid), 10_000).unref();
+      }
+    }
+    res.json({ ok: true });
+  });
+
   // Fast single-request startup bundle for the 1,519 GAP startup files
   app.get('/gap/startup-bundle.json', async (req, res) => {
     try {
@@ -274,7 +629,7 @@ async function createApp() {
   });
 
   // Serve local /gap/* static files & lazy-cached GAP library/package files
-  app.get('/gap/*', async (req, res, next) => {
+  app.get('/gap/*', async (req, res) => {
     const rawParam = (req.params as Record<string, string>)[0] || '';
     const relPath = decodeURIComponent(rawParam).replace(/^\/+/, '');
     if (!relPath || relPath.includes('..')) {
@@ -297,6 +652,22 @@ async function createApp() {
       }
     }
 
+    if (relPath === 'gap.js' || relPath === 'gap.wasm') {
+      try {
+        const cachedBinPath = await ensureGapBinary(relPath);
+        const stat = fs.statSync(cachedBinPath);
+        res.setHeader('Content-Type', getContentType(cachedBinPath));
+        res.setHeader('Content-Length', String(stat.size));
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        fs.createReadStream(cachedBinPath).pipe(res);
+        return;
+      } catch (err) {
+        console.warn(`GAP binary fetch failed (${relPath}):`, err);
+        res.status(503).send('GAP WebAssembly runtime temporarily unavailable');
+        return;
+      }
+    }
+
     if (isAllowedGapPath(relPath)) {
       try {
         const buf = await fetchAndCacheGapFile(relPath);
@@ -311,7 +682,7 @@ async function createApp() {
       }
     }
 
-    next();
+    res.status(404).send('GAP asset not found');
   });
 
   const server = http.createServer(app);

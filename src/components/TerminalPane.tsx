@@ -1,5 +1,4 @@
 import {
-  ExternalLink,
   Keyboard,
   Moon,
   ShieldAlert,
@@ -85,7 +84,7 @@ export function TerminalPane({
         };
       case 'unsupported':
         return {
-          text: '✖ Cross-Origin Isolation Required',
+          text: '✖ WebAssembly Unsupported',
           cls: 'text-rose-600 dark:text-rose-400',
         };
       case 'error':
@@ -269,28 +268,26 @@ export function TerminalPane({
               <div className="flex items-center gap-2.5 text-rose-400">
                 <ShieldAlert className="h-5 w-5 shrink-0" aria-hidden="true" />
                 <h2 className="font-display text-base font-semibold">
-                  Cross-Origin Isolation Required for SharedArrayBuffer
+                  WebAssembly Runtime Unsupported
                 </h2>
               </div>
               <p className="mt-3 text-sm leading-relaxed text-slate-300">
                 {statusDetail ||
-                  'The WebAssembly POSIX terminal uses SharedArrayBuffer and Atomics.wait. This server already sends COOP/COEP headers, but an enclosing browser iframe without allow="cross-origin-isolated" restricts SharedArrayBuffer.'}
+                  'This browser does not support WebAssembly, which is required to execute GAP 4.'}
               </p>
               <div className="mt-4 space-y-1 rounded border border-slate-800 bg-[#0B0E14] p-3 font-mono text-xs text-slate-300 tabular-nums">
+                <div>WebAssembly supported: {String(typeof WebAssembly === 'object')}</div>
                 <div>window.crossOriginIsolated: {String(window.crossOriginIsolated)}</div>
                 <div>typeof SharedArrayBuffer: {typeof SharedArrayBuffer}</div>
-                <div>WebAssembly supported: {String(typeof WebAssembly === 'object')}</div>
               </div>
               <div className="mt-5 flex flex-wrap items-center gap-3">
-                <a
-                  href={typeof window !== 'undefined' ? window.location.href : '/'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex min-h-[44px] items-center gap-2 rounded-md bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap"
+                <button
+                  type="button"
+                  onClick={onLaunchGap}
+                  className="inline-flex min-h-[44px] items-center gap-2 rounded-md bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap cursor-pointer"
                 >
-                  Open Standalone Terminal
-                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                </a>
+                  Retry Boot
+                </button>
                 <button
                   type="button"
                   onClick={onOpenHeaders}

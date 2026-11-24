@@ -125,10 +125,131 @@ function scanUserFiles() {
     }
 }
 
+let bridgeSid = null;
+let bridgeReqSeq = 0;
+
+function decodeBase64ToBytesWorker(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i);
+    }
+    return bytes;
+}
+
+function applyBridgeUploads(uploads) {
+    if (!Array.isArray(uploads) || uploads.length === 0) return;
+    for (const u of uploads) {
+        if (!u || typeof u.name !== "string" || typeof u.dataBase64 !== "string") continue;
+        const targetPath = USER_DIR + "/" + u.name;
+        const parentDir = targetPath.substring(0, targetPath.lastIndexOf("/"));
+        if (parentDir) {
+            try { FS.mkdirTree(parentDir); } catch (e) {}
+        }
+        FS.writeFile(targetPath, decodeBase64ToBytesWorker(u.dataBase64));
+        postMessage({ type: "gap-file-uploaded", name: u.name });
+    }
+    scanUserFiles();
+}
+
+function BridgeTtyClient(sid) {
+    this.sid = sid;
+    this.reqUrl = new URL("/api/tty-bridge/req", self.location.href).href;
+}
+
+BridgeTtyClient.prototype.syncReq = function(req) {
+    const reqId = "r" + (++bridgeReqSeq);
+    for (;;) {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", this.reqUrl, false);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.send(JSON.stringify({ sid: this.sid, reqId: reqId, req: req }));
+        if (xhr.status < 200 || xhr.status >= 300) {
+            throw new Error("PTY bridge HTTP " + xhr.status);
+        }
+        const data = JSON.parse(xhr.responseText);
+        if (data.closed) {
+            throw new Error("PTY bridge closed");
+        }
+        if (data.retry) {
+            continue;
+        }
+        if (data.uploads && data.uploads.length > 0) {
+            applyBridgeUploads(data.uploads);
+        }
+        return data.streamData || [];
+    }
+};
+
+BridgeTtyClient.prototype.onRead = function(length) {
+    const streamData = this.syncReq({ ttyRequestType: "read", length: length || 63 });
+    const count = streamData[0] || 0;
+    return streamData.slice(1, count + 1);
+};
+
+BridgeTtyClient.prototype.onWrite = function(buf) {
+    postMessage({ ttyRequestType: "write", buf: Array.isArray(buf) ? buf : Array.from(buf) });
+};
+
+BridgeTtyClient.prototype.onWaitForReadable = function(timeout) {
+    const streamData = this.syncReq({ ttyRequestType: "poll", timeout: timeout });
+    return streamData[0] === 1;
+};
+
+BridgeTtyClient.prototype.onIoctlTcgets = function() {
+    const t = this.syncReq({ ttyRequestType: "tcgets" });
+    const cc = [];
+    let o = 4;
+    let r = t[o++] || 0;
+    let s = 8;
+    for (let n = 0; n < 32; n++) {
+        cc.push((r >> s) & 255);
+        s += 8;
+        if (s >= 32) {
+            r = t[o++] || 0;
+            s = 0;
+        }
+    }
+    return {
+        iflag: t[0] || 0,
+        oflag: t[1] || 0,
+        cflag: t[2] || 0,
+        lflag: t[3] || 0,
+        cc: cc,
+    };
+};
+
+BridgeTtyClient.prototype.onIoctlTcsets = function(t) {
+    const data = [t.iflag, t.oflag, t.cflag, t.lflag];
+    let i = 0;
+    let o = 8;
+    for (let r = 0; r < t.cc.length; r++) {
+        i |= t.cc[r] << o;
+        o += 8;
+        if (o === 32) {
+            data.push(i);
+            i = 0;
+            o = 0;
+        }
+    }
+    data.push(i);
+    this.syncReq({ ttyRequestType: "tcsets", data: data });
+};
+
+BridgeTtyClient.prototype.onIoctlTiocgwinsz = function() {
+    const streamData = this.syncReq({ ttyRequestType: "tiocgwinsz" });
+    return [streamData[0] || 80, streamData[1] || 24];
+};
+
 onmessage = (msg) => {
     if (msg.data && msg.data.type === "gap-init") {
-        mbCtrl = new Int32Array(msg.data.mailbox, 0, 4);
-        mbData = new Uint8Array(msg.data.mailbox, MB_CTRL_BYTES);
+        if (msg.data.mailbox) {
+            mbCtrl = new Int32Array(msg.data.mailbox, 0, 4);
+            mbData = new Uint8Array(msg.data.mailbox, MB_CTRL_BYTES);
+        }
+        if (msg.data.sid) {
+            bridgeSid = msg.data.sid;
+        }
         return;
     }
 
@@ -153,7 +274,9 @@ onmessage = (msg) => {
         }
     };
 
-    const client = new TtyClient(msg.data);
+    const client = (msg.data && msg.data.type === "tty-bridge-start")
+        ? new BridgeTtyClient(msg.data.sid || bridgeSid)
+        : new TtyClient(msg.data);
     const hooked = Object.create(client);
     hooked.onRead = (length) => {
         fileTransferHook(true);

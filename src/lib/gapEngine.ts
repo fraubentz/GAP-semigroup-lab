@@ -13,12 +13,33 @@ const MB_FLAG_END = 4;
 const MB_CTRL_BYTES = 16;
 const MB_DATA_BYTES = 1 << 20;
 
+interface PtyTermios {
+  iflag: number;
+  oflag: number;
+  cflag: number;
+  lflag: number;
+  cc: number[];
+  clone: () => PtyTermios;
+}
+
+interface PtySlave {
+  onReadable: (cb: () => void) => void;
+  onWritable: (cb: () => void) => void;
+  onSignal: (cb: (sig: string) => void) => void;
+  read: (len?: number) => number[];
+  write: (buf: number[]) => void;
+  writable: boolean;
+  ioctl: ((op: 'TCGETS') => PtyTermios) &
+    ((op: 'TCSETS', val: PtyTermios) => void) &
+    ((op: 'TIOCGWINSZ') => [number, number]);
+}
+
 declare global {
   interface Window {
     Terminal: new (opts: Record<string, unknown>) => XtermInstance;
     FitAddon: { FitAddon: new () => FitAddonInstance };
-    openpty: () => { master: unknown; slave: unknown };
-    TtyServer: new (slave: unknown) => {
+    openpty: () => { master: unknown; slave: PtySlave };
+    TtyServer: new (slave: PtySlave) => {
       start: (worker: Worker, onCustomMessage: (ev: MessageEvent) => void) => void;
     };
   }
@@ -74,6 +95,8 @@ export class GapWorkbenchEngine {
   private shell: LinuxShellController;
   private shellInputDisposable: { dispose: () => void } | null = null;
   private status: EngineStatus = 'booting';
+  private bridgeSid: string | null = null;
+  private bridgeAbort: AbortController | null = null;
 
   constructor(container: HTMLElement, callbacks: GapEngineCallbacks) {
     this.container = container;
@@ -121,11 +144,8 @@ export class GapWorkbenchEngine {
   }
 
   public init(): void {
-    if (typeof SharedArrayBuffer === 'undefined' || !window.crossOriginIsolated) {
-      this.setStatus(
-        'unsupported',
-        'SharedArrayBuffer requires Cross-Origin Isolation (COOP/COEP headers).'
-      );
+    if (typeof WebAssembly !== 'object') {
+      this.setStatus('unsupported', 'WebAssembly is not supported in this browser.');
       return;
     }
 
@@ -296,6 +316,19 @@ export class GapWorkbenchEngine {
 
   private terminateWorkerOnly(): void {
     this.sessionDead = true;
+    if (this.bridgeAbort) {
+      this.bridgeAbort.abort();
+      this.bridgeAbort = null;
+    }
+    if (this.bridgeSid) {
+      const sid = this.bridgeSid;
+      this.bridgeSid = null;
+      void fetch('/api/tty-bridge/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid }),
+      }).catch(() => {});
+    }
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
@@ -325,15 +358,28 @@ export class GapWorkbenchEngine {
     const { master, slave } = window.openpty();
     this.xterm!.loadAddon(master);
 
-    const mailbox = new SharedArrayBuffer(MB_CTRL_BYTES + MB_DATA_BYTES);
-    this.mbCtrl = new Int32Array(mailbox, 0, 4);
-    this.mbData = new Uint8Array(mailbox, MB_CTRL_BYTES);
-
+    const useSab = typeof SharedArrayBuffer !== 'undefined' && window.crossOriginIsolated;
     const baseUrl = import.meta.env.BASE_URL || './';
     const cleanBase = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
     const worker = new Worker(`${cleanBase}gap/gap-worker.js`);
     this.worker = worker;
-    worker.postMessage({ type: 'gap-init', mailbox });
+
+    if (useSab) {
+      this.bridgeSid = null;
+      const mailbox = new SharedArrayBuffer(MB_CTRL_BYTES + MB_DATA_BYTES);
+      this.mbCtrl = new Int32Array(mailbox, 0, 4);
+      this.mbData = new Uint8Array(mailbox, MB_CTRL_BYTES);
+      worker.postMessage({ type: 'gap-init', mailbox });
+    } else {
+      this.mbCtrl = null;
+      this.mbData = null;
+      const sid =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      this.bridgeSid = sid;
+      worker.postMessage({ type: 'gap-init', sid });
+    }
 
     const priorUserFiles = Array.from(this.files.values())
       .filter((f) => f.path !== 'semigroups_toolkit.g' && f.path !== 'semigroup_lab.g')
@@ -369,13 +415,201 @@ export class GapWorkbenchEngine {
       this.setStatus('error', err.message || 'GAP WebAssembly worker crashed');
     });
 
-    const ttyServer = new window.TtyServer(slave);
-    ttyServer.start(worker, (ev: MessageEvent) => this.handleWorkerMessage(ev));
+    if (useSab) {
+      const ttyServer = new window.TtyServer(slave);
+      ttyServer.start(worker, (ev: MessageEvent) => this.handleWorkerMessage(ev));
+    } else {
+      this.startBridgeTtyServer(slave, worker, this.bridgeSid!);
+    }
 
     this.xterm!.write(
       '\x1b[1;36mweb_user@gap-wasm\x1b[0m:\x1b[1;34m/home/web_user\x1b[0m$ gap -l /\r\n' +
         '\x1b[2mBooting GAP 4 WebAssembly runtime (gap.wasm) + virtual filesystem…\x1b[0m\r\n'
     );
+  }
+
+  private startBridgeTtyServer(slave: PtySlave, worker: Worker, sid: string): void {
+    const abort = new AbortController();
+    this.bridgeAbort = abort;
+
+    const fromWorkerBuf: number[] = [];
+    const toWorkerBuf: number[] = [];
+    let pendingWaiter: (() => void) | null = null;
+
+    const feedFromWorker = () => {
+      if (fromWorkerBuf.length === 0) return;
+      if (slave.writable) {
+        slave.write(fromWorkerBuf.splice(0));
+      }
+    };
+
+    slave.onWritable(() => {
+      if (fromWorkerBuf.length > 0) {
+        feedFromWorker();
+      }
+    });
+
+    slave.onReadable(() => {
+      toWorkerBuf.push(...slave.read());
+      if (pendingWaiter && toWorkerBuf.length > 0) {
+        const w = pendingWaiter;
+        pendingWaiter = null;
+        w();
+      }
+    });
+
+    worker.onmessage = (ev: MessageEvent) => {
+      const d = ev.data;
+      if (d && typeof d === 'object' && d.ttyRequestType === 'write') {
+        if (Array.isArray(d.buf)) {
+          fromWorkerBuf.push(...d.buf);
+          feedFromWorker();
+        }
+        return;
+      }
+      this.handleWorkerMessage(ev);
+    };
+
+    const termiosToData = (t: PtyTermios): number[] => {
+      const e = [t.iflag, t.oflag, t.cflag, t.lflag];
+      let i = 0;
+      let o = 8;
+      for (let r = 0; r < t.cc.length; r++) {
+        i |= t.cc[r] << o;
+        o += 8;
+        if (o === 32) {
+          e.push(i);
+          i = 0;
+          o = 0;
+        }
+      }
+      e.push(i);
+      return e;
+    };
+
+    const dataToTermios = (t: number[], sample: PtyTermios): PtyTermios => {
+      const cc: number[] = [];
+      let o = 4;
+      let r = t[o++] || 0;
+      let s = 8;
+      for (let n = 0; n < 32; n++) {
+        cc.push((r >> s) & 255);
+        s += 8;
+        if (s >= 32) {
+          r = t[o++] || 0;
+          s = 0;
+        }
+      }
+      const Ctor = sample.constructor as new (
+        iflag: number,
+        oflag: number,
+        cflag: number,
+        lflag: number,
+        cc: number[]
+      ) => PtyTermios;
+      return new Ctor(t[0] || 0, t[1] || 0, t[2] || 0, t[3] || 0, cc);
+    };
+
+    const waitForReadable = (timeoutSec: number): Promise<boolean> => {
+      if (toWorkerBuf.length > 0) return Promise.resolve(true);
+      if (timeoutSec === 0) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const done = (ok: boolean) => {
+          if (timer) clearTimeout(timer);
+          if (pendingWaiter === onInput) pendingWaiter = null;
+          resolve(ok);
+        };
+        const onInput = () => done(true);
+        pendingWaiter = onInput;
+        if (timeoutSec > 0) {
+          timer = setTimeout(() => done(false), timeoutSec * 1000);
+        }
+        abort.signal.addEventListener('abort', () => done(false), { once: true });
+      });
+    };
+
+    const handleBridgeReq = async (
+      reqId: string,
+      req: { ttyRequestType: string; length?: number; timeout?: number; data?: number[] }
+    ) => {
+      let streamData: number[] = [];
+      switch (req.ttyRequestType) {
+        case 'read': {
+          if (toWorkerBuf.length === 0) {
+            await waitForReadable(-1);
+          }
+          if (abort.signal.aborted) return;
+          const maxLen = Math.min(req.length || 63, toWorkerBuf.length);
+          const chunk = toWorkerBuf.splice(0, maxLen);
+          streamData = [chunk.length, ...chunk];
+          break;
+        }
+        case 'poll': {
+          const ok = await waitForReadable(req.timeout ?? -1);
+          if (abort.signal.aborted) return;
+          streamData = [ok ? 1 : 2];
+          break;
+        }
+        case 'tcgets': {
+          streamData = termiosToData(slave.ioctl('TCGETS'));
+          break;
+        }
+        case 'tcsets': {
+          if (Array.isArray(req.data)) {
+            const sample = slave.ioctl('TCGETS');
+            slave.ioctl('TCSETS', dataToTermios(req.data, sample));
+          }
+          streamData = [];
+          break;
+        }
+        case 'tiocgwinsz': {
+          const [cols, rows] = slave.ioctl('TIOCGWINSZ');
+          streamData = [cols, rows];
+          break;
+        }
+      }
+
+      if (abort.signal.aborted) return;
+      await fetch('/api/tty-bridge/res', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid, reqId, streamData }),
+        signal: abort.signal,
+      }).catch(() => {});
+    };
+
+    const pollLoop = async () => {
+      while (!abort.signal.aborted) {
+        try {
+          const r = await fetch('/api/tty-bridge/next', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sid }),
+            signal: abort.signal,
+          });
+          if (!r.ok) {
+            await new Promise((res) => setTimeout(res, 250));
+            continue;
+          }
+          const data = (await r.json()) as {
+            closed?: boolean;
+            reqId?: string;
+            req?: { ttyRequestType: string; length?: number; timeout?: number; data?: number[] } | null;
+          };
+          if (data.closed) break;
+          if (data.reqId && data.req) {
+            await handleBridgeReq(data.reqId, data.req);
+          }
+        } catch {
+          if (abort.signal.aborted) break;
+          await new Promise((res) => setTimeout(res, 250));
+        }
+      }
+    };
+
+    void pollLoop();
+    worker.postMessage({ type: 'tty-bridge-start', sid });
   }
 
   private handleWorkerMessage(ev: MessageEvent): void {
@@ -546,7 +780,38 @@ export class GapWorkbenchEngine {
     }
     this.emitFiles();
 
-    if (this.shell.isActive() || this.senderActive || !this.mbCtrl) {
+    if (this.shell.isActive()) {
+      return;
+    }
+
+    if (this.bridgeSid) {
+      const encodeBase64 = (bytes: Uint8Array): string => {
+        let bin = '';
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+        }
+        return btoa(bin);
+      };
+      try {
+        await fetch('/api/tty-bridge/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sid: this.bridgeSid,
+            files: items.map((item) => ({
+              name: item.name,
+              dataBase64: encodeBase64(item.data),
+            })),
+          }),
+        });
+      } catch (err) {
+        console.warn('Bridge upload failed:', err);
+      }
+      return;
+    }
+
+    if (this.senderActive || !this.mbCtrl) {
       return;
     }
 

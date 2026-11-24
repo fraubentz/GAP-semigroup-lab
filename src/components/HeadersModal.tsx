@@ -20,7 +20,19 @@ export function HeadersModal({ open, onClose }: HeadersModalProps) {
 
   if (!open) return null;
 
+  const useSab = typeof SharedArrayBuffer !== 'undefined' && window.crossOriginIsolated;
+
   const clientChecks = [
+    {
+      label: 'WebAssembly Engine',
+      value: typeof WebAssembly === 'object' ? 'Supported' : 'Unsupported',
+      ok: typeof WebAssembly === 'object',
+    },
+    {
+      label: 'PTY Transport Mode',
+      value: useSab ? 'SharedArrayBuffer' : 'HTTP PTY Bridge (Iframe-safe)',
+      ok: true,
+    },
     {
       label: 'window.crossOriginIsolated',
       value: String(window.crossOriginIsolated),
@@ -28,18 +40,8 @@ export function HeadersModal({ open, onClose }: HeadersModalProps) {
     },
     {
       label: 'SharedArrayBuffer',
-      value: typeof SharedArrayBuffer !== 'undefined' ? 'Available' : 'Unavailable',
+      value: typeof SharedArrayBuffer !== 'undefined' ? 'Available' : 'Fallback active',
       ok: typeof SharedArrayBuffer !== 'undefined',
-    },
-    {
-      label: 'Atomics.wait',
-      value: typeof Atomics !== 'undefined' ? 'Available' : 'Unavailable',
-      ok: typeof Atomics !== 'undefined',
-    },
-    {
-      label: 'WebAssembly Engine',
-      value: typeof WebAssembly === 'object' ? 'Supported' : 'Unsupported',
-      ok: typeof WebAssembly === 'object',
     },
   ];
 

@@ -60,6 +60,11 @@ if (typeof window === 'undefined') {
 
 } else {
     (() => {
+        try {
+            if (window.self !== window.top) return;
+        } catch (e) {
+            return;
+        }
         const reloadedBySelf = window.sessionStorage.getItem("coiReloadedBySelf");
         window.sessionStorage.removeItem("coiReloadedBySelf");
         const coepDegrading = (reloadedBySelf == "coepdegrade");
