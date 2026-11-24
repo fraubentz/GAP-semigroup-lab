@@ -1,5 +1,7 @@
 // Instrument fetch and XMLHttpRequest so the page can track GAP asset
 // loading progress, and reliably fetch + decompress gap.wasm.
+const UPSTREAM_GAP_FS_BASE = "https://raw.githubusercontent.com/fraubentz/gap-in-the-browser/gh-pages/";
+
 (function instrumentFetches() {
     const seen = new Set();
     const report = (raw) => {
@@ -11,15 +13,12 @@
     const origFetch = self.fetch;
     let cachedWasmBytesPromise = null;
 
-    const loadValidatedWasmBytes = async (init) => {
-        const wasmGzUrl = new URL("gap.wasm.gzbin", self.location.href).href;
-        const res = await origFetch(wasmGzUrl, init || { credentials: "same-origin" });
-        if (!res.ok) {
-            throw new Error("Failed to fetch " + wasmGzUrl + " (HTTP " + res.status + ")");
-        }
+    const UPSTREAM_GAP_WASM_URL = "https://raw.githubusercontent.com/fraubentz/GAP-semigroup-lab/main/public/gap/gap.wasm";
+
+    const parseAndValidateWasmResponse = async (res, sourceUrl) => {
         const rawBytes = new Uint8Array(await res.arrayBuffer());
         if (rawBytes.length < 4) {
-            throw new Error("Received empty gap.wasm payload (" + rawBytes.length + " bytes)");
+            throw new Error("Received empty gap.wasm payload (" + rawBytes.length + " bytes) from " + sourceUrl);
         }
 
         let wasmBytes = null;
@@ -45,7 +44,7 @@
             throw new Error(
                 "Invalid gap.wasm response (HTTP " + res.status +
                 ", type=" + (res.headers.get("content-type") || "unknown") +
-                ", url=" + res.url +
+                ", url=" + (res.url || sourceUrl) +
                 ", len=" + rawBytes.length +
                 ", hex=" + hex +
                 ", preview=" + preview + ")"
@@ -62,6 +61,39 @@
             throw new Error("Decompressed gap.wasm failed magic check (len=" + wasmBytes.length + ")");
         }
         return wasmBytes;
+    };
+
+    const loadValidatedWasmBytes = async (init) => {
+        const candidates = [
+            {
+                url: new URL("gap.wasm.gzbin", self.location.href).href,
+                opts: init || { credentials: "same-origin" }
+            },
+            {
+                url: new URL("gap.wasm", self.location.href).href,
+                opts: init || { credentials: "same-origin" }
+            },
+            {
+                url: UPSTREAM_GAP_WASM_URL,
+                opts: { mode: "cors", credentials: "omit" }
+            }
+        ];
+
+        let lastErr = null;
+        for (let i = 0; i < candidates.length; i++) {
+            const c = candidates[i];
+            try {
+                const res = await origFetch(c.url, c.opts);
+                if (!res.ok) {
+                    lastErr = new Error("Failed to fetch " + c.url + " (HTTP " + res.status + ")");
+                    continue;
+                }
+                return await parseAndValidateWasmResponse(res, c.url);
+            } catch (err) {
+                lastErr = err instanceof Error ? err : new Error(String(err));
+            }
+        }
+        throw lastErr || new Error("Failed to load gap.wasm");
     };
 
     self.fetch = function(input, init) {
@@ -103,7 +135,7 @@
 
 self.Module = self.Module || {};
 self.Module.locateFile = function(path) {
-    return "/gap/" + path;
+    return new URL(path, self.location.href).href;
 };
 self.Module.onAbort = function(what) {
     self.postMessage({
@@ -120,8 +152,8 @@ self.Module.preRun.push(function() {
 
     async function seedWorkspaceFiles() {
         const defaults = [
-            { name: 'semigroups_toolkit.g', url: '/gap/semigroups_toolkit.g' },
-            { name: 'semigroup_lab.g', url: '/gap/semigroup_lab.g' }
+            { name: 'semigroups_toolkit.g', url: new URL('semigroups_toolkit.g', self.location.href).href },
+            { name: 'semigroup_lab.g', url: new URL('semigroup_lab.g', self.location.href).href }
         ];
         await Promise.all(defaults.map(async (item) => {
             try {
@@ -254,7 +286,13 @@ self.Module.preRun.push(function() {
                     }
                     fallbackFetchPromises.push((async () => {
                         try {
-                            const response = await fetch(fetchPath);
+                            let response = await fetch(fetchPath);
+                            if (!response.ok) {
+                                response = await fetch(UPSTREAM_GAP_FS_BASE + fetchRelativePath, {
+                                    mode: "cors",
+                                    credentials: "omit"
+                                });
+                            }
                             if (!response.ok) return;
                             const buffer = await response.arrayBuffer();
                             ensureParentDir(appPath);
@@ -280,7 +318,13 @@ self.Module.preRun.push(function() {
                     const fetchPath = physicalDir + fetchRelativePath;
                     fallbackFetchPromises.push((async () => {
                         try {
-                            const response = await fetch(fetchPath);
+                            let response = await fetch(fetchPath);
+                            if (!response.ok) {
+                                response = await fetch(UPSTREAM_GAP_FS_BASE + fetchRelativePath, {
+                                    mode: "cors",
+                                    credentials: "omit"
+                                });
+                            }
                             if (!response.ok) return;
                             const buffer = await response.arrayBuffer();
                             ensureParentDir(appPath);
