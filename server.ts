@@ -205,28 +205,34 @@ async function createApp() {
   app.disable('x-powered-by');
 
   // Appropriate Security Headers for WebAssembly, SharedArrayBuffer, and Cross-Origin Isolation
-  app.use((_req, res, next) => {
-    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  app.use((req, res, next) => {
+    const fetchDest = req.headers['sec-fetch-dest'];
+    const needsIsolationHeaders =
+      fetchDest === 'document' || fetchDest === 'worker' || fetchDest === 'sharedworker';
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    res.setHeader('Origin-Agent-Cluster', '?1');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-    res.setHeader(
-      'Content-Security-Policy',
-      [
-        "default-src 'self'",
-        "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'",
-        "worker-src 'self' blob:",
-        "style-src 'self' 'unsafe-inline'",
-        "font-src 'self' data:",
-        "img-src 'self' data: blob:",
-        "connect-src 'self' wss: ws:",
-        "object-src 'none'",
-        "base-uri 'self'",
-      ].join('; ')
-    );
+
+    if (needsIsolationHeaders) {
+      res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+      res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+      res.setHeader('Origin-Agent-Cluster', '?1');
+      res.setHeader(
+        'Content-Security-Policy',
+        [
+          "default-src 'self'",
+          "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'",
+          "worker-src 'self' blob:",
+          "style-src 'self' 'unsafe-inline'",
+          "font-src 'self' data:",
+          "img-src 'self' data: blob:",
+          "connect-src 'self' wss: ws:",
+          "object-src 'none'",
+          "base-uri 'self'",
+        ].join('; ')
+      );
+    }
     next();
   });
 
@@ -313,10 +319,57 @@ async function createApp() {
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
+    const disableHmr =
+      process.env.DISABLE_HMR === 'true' ||
+      Boolean(process.env.CONTROL_PLANE_PORT || process.env.K_SERVICE);
+    if (disableHmr) {
+      app.get('/@vite/client', (_req, res) => {
+        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.send(
+          [
+            'export function createHotContext() {',
+            '  return {',
+            '    data: {},',
+            '    accept() {},',
+            '    acceptDeps() {},',
+            '    acceptExports() {},',
+            '    dispose() {},',
+            '    prune() {},',
+            '    decline() {},',
+            '    invalidate() {},',
+            '    on() {},',
+            '    off() {},',
+            '    send() {},',
+            '  };',
+            '}',
+            'export function updateStyle(id, content) {',
+            '  const sel = \'style[data-vite-dev-id="\' + CSS.escape(id) + \'"]\';',
+            '  let style = document.querySelector(sel);',
+            '  if (!style) {',
+            '    style = document.createElement("style");',
+            '    style.setAttribute("type", "text/css");',
+            '    style.setAttribute("data-vite-dev-id", id);',
+            '    document.head.appendChild(style);',
+            '  }',
+            '  style.textContent = content;',
+            '}',
+            'export function removeStyle(id) {',
+            '  const sel = \'style[data-vite-dev-id="\' + CSS.escape(id) + \'"]\';',
+            '  const style = document.querySelector(sel);',
+            '  if (style) style.remove();',
+            '}',
+            'export function injectQuery(url) { return url; }',
+            'export class ErrorOverlay { constructor() {} }',
+          ].join('\n')
+        );
+      });
+    }
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : { server },
+        hmr: disableHmr ? false : { server },
+        ws: disableHmr ? false : { server },
       },
       appType: 'spa',
     });
