@@ -61,12 +61,13 @@ self.Module.preRun.push(function() {
 
     async function initFS() {
         try {
+            const gapDirUrl = new URL("./", self.location.href).href;
             const [mapRes] = await Promise.all([
-                fetch('/gap/gap-fs.json'),
+                fetch(new URL("gap-fs.json", gapDirUrl).href),
                 seedWorkspaceFiles()
             ]);
             const fileList = await mapRes.json();
-            const physicalDir = "/gap/";
+            const physicalDir = gapDirUrl;
             var createdDirs = {};
 
             fileList.forEach(function(appPath) {
@@ -92,7 +93,7 @@ self.Module.preRun.push(function() {
 
                 var buildId = null;
                 try {
-                    const idRes = await fetch('/gap/build-id', { cache: 'no-cache' });
+                    const idRes = await fetch(new URL("build-id", gapDirUrl).href, { cache: 'no-cache' });
                     if (idRes.ok) buildId = (await idRes.text()).trim();
                 } catch (e) {}
 
@@ -122,7 +123,7 @@ self.Module.preRun.push(function() {
 
                 var startupSet = new Set();
                 try {
-                    const manifestRes = await fetch('/gap/startup_manifest.json');
+                    const manifestRes = await fetch(new URL("startup_manifest.json", gapDirUrl).href);
                     if (manifestRes.ok) {
                         const manifest = await manifestRes.json();
                         manifest.forEach(p => {
@@ -150,7 +151,7 @@ self.Module.preRun.push(function() {
                 if (missingStartup.length > 10) {
                     try {
                         self.postMessage({ type: "gap-bundle-status", status: "downloading", count: missingStartup.length });
-                        const bundleRes = await fetch('/gap/startup-bundle.json');
+                        const bundleRes = await fetch(new URL("startup-bundle.json", gapDirUrl).href);
                         if (bundleRes.ok) {
                             const parsed = await bundleRes.json();
                             if (parsed && parsed.files) {

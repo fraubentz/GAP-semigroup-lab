@@ -1,7 +1,7 @@
 // GAP WebAssembly worker: wires Emscripten PTY to xterm-pty on the main thread
 // and synchronizes /home/web_user files via SharedArrayBuffer mailbox + postMessage.
 
-importScripts("/gap/vendor/xterm-pty/workerTools.js");
+importScripts(new URL("../gap/vendor/xterm-pty/workerTools.js", import.meta.url || self.location.href).href);
 
 const MB_STATE = 0, MB_LEN = 1, MB_FLAGS = 2;
 const MB_IDLE = 0, MB_READY = 1, MB_CONSUMED = 2;
@@ -139,8 +139,8 @@ onmessage = (msg) => {
         postMessage({ type: "gap-exited", code: code });
     };
 
-    importScripts("/gap/gap-fs.js");
-    importScripts("/gap/gap.js");
+    importScripts(new URL("gap-fs.js", self.location.href).href);
+    importScripts(new URL("gap.js", self.location.href).href);
 
     const fileTransferHook = (scan) => {
         try {

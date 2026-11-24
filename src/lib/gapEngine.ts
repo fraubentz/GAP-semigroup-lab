@@ -129,7 +129,10 @@ export class GapWorkbenchEngine {
       return;
     }
 
-    fetch('/gap/startup_manifest.json')
+    const baseUrl = import.meta.env.BASE_URL || './';
+    const cleanBase = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+
+    fetch(`${cleanBase}gap/startup_manifest.json`)
       .then((r) => (r.ok ? r.json() : []))
       .then((list: string[]) => {
         if (Array.isArray(list) && list.length > 0) {
@@ -326,7 +329,9 @@ export class GapWorkbenchEngine {
     this.mbCtrl = new Int32Array(mailbox, 0, 4);
     this.mbData = new Uint8Array(mailbox, MB_CTRL_BYTES);
 
-    const worker = new Worker('/gap/gap-worker.js');
+    const baseUrl = import.meta.env.BASE_URL || './';
+    const cleanBase = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+    const worker = new Worker(`${cleanBase}gap/gap-worker.js`);
     this.worker = worker;
     worker.postMessage({ type: 'gap-init', mailbox });
 
