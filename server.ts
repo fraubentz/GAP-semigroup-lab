@@ -39,6 +39,7 @@ const ALLOWED_GAP_PREFIXES = new Set([
 
 let validGapFiles: Set<string> = new Set();
 let startupManifestList: string[] = [];
+let startupManifestSet: Set<string> = new Set();
 let gapBuildId = 'unknown';
 
 async function loadGapMetadata(): Promise<void> {
@@ -53,6 +54,9 @@ async function loadGapMetadata(): Promise<void> {
   try {
     const manifestRaw = await fsp.readFile(path.join(GAP_PUBLIC_DIR, 'startup_manifest.json'), 'utf8');
     startupManifestList = JSON.parse(manifestRaw) as string[];
+    startupManifestSet = new Set(
+      startupManifestList.map((p) => (p.startsWith('/') ? p.slice(1) : p))
+    );
   } catch (err) {
     console.warn('Could not load public/gap/startup_manifest.json:', err);
   }
@@ -111,39 +115,61 @@ async function ensureSemigroupsPackage(): Promise<void> {
   }
 }
 
-async function ensureGapBinary(name: 'gap.js' | 'gap.wasm'): Promise<string> {
+async function ensureGapBinary(name: 'gap.js' | 'gap.wasm'): Promise<{ rawPath: string; gzPath: string }> {
   const cachedPath = path.join(CACHE_DIR, name);
-  try {
-    const st = await fsp.stat(cachedPath);
-    if (st.isFile() && st.size > 0) {
-      return cachedPath;
-    }
-  } catch {
-    // Cache miss
+  const gzPath = `${cachedPath}.gz`;
+
+  const hasRaw = await fsp
+    .stat(cachedPath)
+    .then((st) => st.isFile() && st.size > 0)
+    .catch(() => false);
+  const hasGz = await fsp
+    .stat(gzPath)
+    .then((st) => st.isFile() && st.size > 0)
+    .catch(() => false);
+
+  if (hasRaw && hasGz) {
+    return { rawPath: cachedPath, gzPath };
   }
 
   const existing = inflightBinaryFetches.get(name);
-  if (existing) return existing;
+  if (existing) {
+    await existing;
+    return { rawPath: cachedPath, gzPath };
+  }
 
   const task = (async () => {
     await fsp.mkdir(CACHE_DIR, { recursive: true });
-    const url = `${GAP_BINARY_UPSTREAM}/${name}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(180000) });
-    if (!res.ok || !res.body) {
-      throw new Error(`Upstream fetch failed (${res.status}) for ${name}`);
+    if (!hasRaw) {
+      const url = `${GAP_BINARY_UPSTREAM}/${name}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(180000) });
+      if (!res.ok || !res.body) {
+        throw new Error(`Upstream fetch failed (${res.status}) for ${name}`);
+      }
+      const tmpPath = `${cachedPath}.tmp`;
+      await pipeline(
+        Readable.fromWeb(res.body as unknown as import('stream/web').ReadableStream),
+        fs.createWriteStream(tmpPath)
+      );
+      await fsp.rename(tmpPath, cachedPath);
     }
-    const tmpPath = `${cachedPath}.tmp`;
-    await pipeline(
-      Readable.fromWeb(res.body as unknown as import('stream/web').ReadableStream),
-      fs.createWriteStream(tmpPath)
-    );
-    await fsp.rename(tmpPath, cachedPath);
+
+    if (!hasGz) {
+      const gzTmpPath = `${gzPath}.tmp`;
+      await pipeline(
+        fs.createReadStream(cachedPath),
+        zlib.createGzip({ level: 6 }),
+        fs.createWriteStream(gzTmpPath)
+      );
+      await fsp.rename(gzTmpPath, gzPath);
+    }
     return cachedPath;
   })();
 
   inflightBinaryFetches.set(name, task);
   try {
-    return await task;
+    await task;
+    return { rawPath: cachedPath, gzPath };
   } finally {
     inflightBinaryFetches.delete(name);
   }
@@ -154,7 +180,7 @@ function isAllowedGapPath(relPath: string): boolean {
   const topDir = relPath.split('/')[0];
   if (!ALLOWED_GAP_PREFIXES.has(topDir)) return false;
   if (validGapFiles.size > 0) {
-    return validGapFiles.has(relPath);
+    return validGapFiles.has(relPath) || startupManifestSet.has(relPath);
   }
   return true;
 }
@@ -617,7 +643,9 @@ async function createApp() {
       res.setHeader('Vary', 'Accept-Encoding');
       const acceptEncoding = req.headers['accept-encoding'] || '';
       if (acceptEncoding.includes('gzip')) {
+        const st = fs.statSync(bundleGzPath);
         res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Content-Length', String(st.size));
         fs.createReadStream(bundleGzPath).pipe(res);
       } else {
         fs.createReadStream(bundleGzPath).pipe(zlib.createGunzip()).pipe(res);
@@ -637,6 +665,9 @@ async function createApp() {
       return;
     }
 
+    const acceptEncoding = req.headers['accept-encoding'] || '';
+    const wantsGzip = acceptEncoding.includes('gzip');
+
     const localCandidate = path.resolve(GAP_PUBLIC_DIR, relPath);
     if (localCandidate.startsWith(GAP_PUBLIC_DIR + path.sep) && fs.existsSync(localCandidate)) {
       const stat = fs.statSync(localCandidate);
@@ -647,19 +678,34 @@ async function createApp() {
         } else {
           res.setHeader('Cache-Control', 'public, max-age=86400');
         }
-        fs.createReadStream(localCandidate).pipe(res);
+        if (wantsGzip && stat.size > 16384) {
+          res.setHeader('Content-Encoding', 'gzip');
+          res.setHeader('Vary', 'Accept-Encoding');
+          fs.createReadStream(localCandidate).pipe(zlib.createGzip({ level: 6 })).pipe(res);
+        } else {
+          res.setHeader('Content-Length', String(stat.size));
+          fs.createReadStream(localCandidate).pipe(res);
+        }
         return;
       }
     }
 
     if (relPath === 'gap.js' || relPath === 'gap.wasm') {
       try {
-        const cachedBinPath = await ensureGapBinary(relPath);
-        const stat = fs.statSync(cachedBinPath);
-        res.setHeader('Content-Type', getContentType(cachedBinPath));
-        res.setHeader('Content-Length', String(stat.size));
+        const { rawPath, gzPath } = await ensureGapBinary(relPath);
+        res.setHeader('Content-Type', getContentType(rawPath));
         res.setHeader('Cache-Control', 'public, max-age=86400');
-        fs.createReadStream(cachedBinPath).pipe(res);
+        res.setHeader('Vary', 'Accept-Encoding');
+        if (wantsGzip) {
+          const gzStat = fs.statSync(gzPath);
+          res.setHeader('Content-Encoding', 'gzip');
+          res.setHeader('Content-Length', String(gzStat.size));
+          fs.createReadStream(gzPath).pipe(res);
+        } else {
+          const rawStat = fs.statSync(rawPath);
+          res.setHeader('Content-Length', String(rawStat.size));
+          fs.createReadStream(rawPath).pipe(res);
+        }
         return;
       } catch (err) {
         console.warn(`GAP binary fetch failed (${relPath}):`, err);

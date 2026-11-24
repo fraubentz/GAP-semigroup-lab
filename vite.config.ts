@@ -36,7 +36,7 @@ export default defineConfig(() => {
     },
     server: {
       allowedHosts: true as const,
-      // HMR is disabled in AI Studio via DISABLE_HMR env var (or CONTROL_PLANE_PORT in preview).
+      // HMR is disabled when DISABLE_HMR=true (or CONTROL_PLANE_PORT is set in preview).
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true' && !process.env.CONTROL_PLANE_PORT,
       ws: process.env.DISABLE_HMR === 'true' || Boolean(process.env.CONTROL_PLANE_PORT) ? (false as const) : undefined,

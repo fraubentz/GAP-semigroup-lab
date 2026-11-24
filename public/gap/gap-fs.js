@@ -175,11 +175,13 @@ self.Module.preRun.push(function() {
                             return;
                         } catch (e) {}
 
-                        if (bundleMap && bundleMap[appPath]) {
-                            const data = decodeBase64ToBytes(bundleMap[appPath]);
-                            FS.writeFile(finalAppPath, data);
-                            FS.writeFile(idbfsPath, data);
-                            needsSave = true;
+                        if (bundleMap) {
+                            if (bundleMap[appPath]) {
+                                const data = decodeBase64ToBytes(bundleMap[appPath]);
+                                FS.writeFile(finalAppPath, data);
+                                FS.writeFile(idbfsPath, data);
+                                needsSave = true;
+                            }
                             return;
                         }
 

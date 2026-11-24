@@ -1,7 +1,7 @@
 // GAP WebAssembly worker: wires Emscripten PTY to xterm-pty on the main thread
 // and synchronizes /home/web_user files via SharedArrayBuffer mailbox + postMessage.
 
-importScripts(new URL("../gap/vendor/xterm-pty/workerTools.js", import.meta.url || self.location.href).href);
+importScripts(new URL("vendor/xterm-pty/workerTools.js", self.location.href).href);
 
 const MB_STATE = 0, MB_LEN = 1, MB_FLAGS = 2;
 const MB_IDLE = 0, MB_READY = 1, MB_CONSUMED = 2;
@@ -242,53 +242,59 @@ BridgeTtyClient.prototype.onIoctlTiocgwinsz = function() {
 };
 
 onmessage = (msg) => {
-    if (msg.data && msg.data.type === "gap-init") {
-        if (msg.data.mailbox) {
-            mbCtrl = new Int32Array(msg.data.mailbox, 0, 4);
-            mbData = new Uint8Array(msg.data.mailbox, MB_CTRL_BYTES);
+    try {
+        if (msg.data && msg.data.type === "gap-init") {
+            if (msg.data.mailbox) {
+                mbCtrl = new Int32Array(msg.data.mailbox, 0, 4);
+                mbData = new Uint8Array(msg.data.mailbox, MB_CTRL_BYTES);
+            }
+            if (msg.data.sid) {
+                bridgeSid = msg.data.sid;
+            }
+            return;
         }
-        if (msg.data.sid) {
-            bridgeSid = msg.data.sid;
-        }
-        return;
+
+        self.Module = self.Module || {};
+        self.Module.arguments = ["-l", "/"];
+        self.Module.onExit = function(code) {
+            try { scanUserFiles(); } catch (e) {}
+            postMessage({ type: "gap-exited", code: code });
+        };
+
+        importScripts(new URL("gap-fs.js", self.location.href).href);
+        importScripts(new URL("gap.js", self.location.href).href);
+
+        const fileTransferHook = (scan) => {
+            try {
+                drainMailbox();
+                if (scan) scanUserFiles();
+            } catch (e) {
+                console.error("gap-worker: file transfer hook failed:", e);
+                postMessage({ type: "gap-file-error", name: null, error: String(e) });
+                throw e;
+            }
+        };
+
+        const client = (msg.data && msg.data.type === "tty-bridge-start")
+            ? new BridgeTtyClient(msg.data.sid || bridgeSid)
+            : new TtyClient(msg.data);
+        const hooked = Object.create(client);
+        hooked.onRead = (length) => {
+            fileTransferHook(true);
+            return client.onRead(length);
+        };
+        hooked.onWaitForReadable = (timeout) => {
+            fileTransferHook(true);
+            return client.onWaitForReadable(timeout);
+        };
+        hooked.onWrite = (buf) => {
+            fileTransferHook(false);
+            return client.onWrite(buf);
+        };
+        emscriptenHack(hooked);
+    } catch (err) {
+        const msgText = (err && (err.stack || err.message)) ? (err.stack || err.message) : String(err);
+        console.error("gap-worker fatal error:", err);
+        postMessage({ type: "gap-worker-error", error: msgText });
     }
-
-    self.Module = self.Module || {};
-    self.Module.arguments = ["-l", "/"];
-    self.Module.onExit = function(code) {
-        try { scanUserFiles(); } catch (e) {}
-        postMessage({ type: "gap-exited", code: code });
-    };
-
-    importScripts(new URL("gap-fs.js", self.location.href).href);
-    importScripts(new URL("gap.js", self.location.href).href);
-
-    const fileTransferHook = (scan) => {
-        try {
-            drainMailbox();
-            if (scan) scanUserFiles();
-        } catch (e) {
-            console.error("gap-worker: file transfer hook failed:", e);
-            postMessage({ type: "gap-file-error", name: null, error: String(e) });
-            throw e;
-        }
-    };
-
-    const client = (msg.data && msg.data.type === "tty-bridge-start")
-        ? new BridgeTtyClient(msg.data.sid || bridgeSid)
-        : new TtyClient(msg.data);
-    const hooked = Object.create(client);
-    hooked.onRead = (length) => {
-        fileTransferHook(true);
-        return client.onRead(length);
-    };
-    hooked.onWaitForReadable = (timeout) => {
-        fileTransferHook(true);
-        return client.onWaitForReadable(timeout);
-    };
-    hooked.onWrite = (buf) => {
-        fileTransferHook(false);
-        return client.onWrite(buf);
-    };
-    emscriptenHack(hooked);
 };

@@ -124,12 +124,94 @@ export function HeadersModal({ open, onClose }: HeadersModalProps) {
             </div>
           </div>
 
-          <div className="border-t border-slate-200 pt-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
-            Powered by GAP 4 WebAssembly (<span className="font-mono">gap-system/gap</span>,{' '}
-            <span className="font-mono">fraubentz/gap-in-the-browser</span>) with Semigroup
-            Theory tools inspired by <span className="font-mono">semigroups/Semigroups</span>,{' '}
-            <span className="font-mono">smallsemi</span>, and{' '}
-            <span className="font-mono">numericalsgps</span>.
+          <div className="border-t border-slate-200 pt-3 text-xs leading-relaxed text-slate-500 dark:border-slate-800 dark:text-slate-400 space-y-1.5">
+            <div>
+              Licensed under <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">GPL-3.0-or-later</span>.
+            </div>
+            <div>
+              Built with{' '}
+              <a
+                href="https://github.com/gap-system/gap"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                gap-system/gap
+              </a>{' '}
+              (GPL-2.0-or-later),{' '}
+              <a
+                href="https://github.com/gap-system/gap-in-the-browser"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                gap-system/gap-in-the-browser
+              </a>{' '}
+              (GPL-2.0-or-later),{' '}
+              <a
+                href="https://github.com/semigroups/Semigroups"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                semigroups/Semigroups
+              </a>{' '}
+              &amp;{' '}
+              <a
+                href="https://github.com/libsemigroups/libsemigroups"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                libsemigroups
+              </a>{' '}
+              (GPL-3.0-or-later),{' '}
+              <a
+                href="https://github.com/gap-packages/smallsemi"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                smallsemi
+              </a>
+              ,{' '}
+              <a
+                href="https://github.com/gap-packages/numericalsgps"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                numericalsgps
+              </a>
+              ,{' '}
+              <a
+                href="https://github.com/xtermjs/xterm.js"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                xtermjs/xterm.js
+              </a>{' '}
+              (MIT),{' '}
+              <a
+                href="https://github.com/mame/xterm-pty"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                mame/xterm-pty
+              </a>{' '}
+              (MIT), and{' '}
+              <a
+                href="https://github.com/gzuidhof/coi-serviceworker"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono underline decoration-slate-400/50 hover:text-cyan-600 dark:hover:text-cyan-400"
+              >
+                gzuidhof/coi-serviceworker
+              </a>{' '}
+              (MIT).
+            </div>
           </div>
         </div>
       </div>

@@ -412,7 +412,9 @@ export class GapWorkbenchEngine {
     });
 
     worker.addEventListener('error', (err) => {
-      this.setStatus('error', err.message || 'GAP WebAssembly worker crashed');
+      const msg = err.message || 'GAP WebAssembly worker crashed';
+      this.xterm?.write(`\r\n\x1b[1;31m[Worker error]\x1b[0m ${msg}\r\n`);
+      this.setStatus('error', msg);
     });
 
     if (useSab) {
@@ -683,6 +685,13 @@ export class GapWorkbenchEngine {
           }
         }
         this.emitFiles();
+        break;
+      }
+
+      case 'gap-worker-error': {
+        const msg = typeof data.error === 'string' ? data.error : 'GAP WebAssembly worker failed';
+        this.xterm?.write(`\r\n\x1b[1;31m[Worker error]\x1b[0m ${msg}\r\n`);
+        this.setStatus('error', msg);
         break;
       }
 
