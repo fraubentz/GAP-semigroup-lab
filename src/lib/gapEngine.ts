@@ -105,6 +105,7 @@ export class GapWorkbenchEngine {
   private ttyServer: PtyTtyServer | null = null;
   private status: EngineStatus = 'booting';
   private bridgeSid: string | null = null;
+  private bridgeBaseUrl = '/api/tty-bridge';
   private bridgeAbort: AbortController | null = null;
 
   constructor(container: HTMLElement, callbacks: GapEngineCallbacks) {
@@ -340,8 +341,9 @@ export class GapWorkbenchEngine {
     }
     if (this.bridgeSid) {
       const sid = this.bridgeSid;
+      const closeUrl = `${this.bridgeBaseUrl.replace(/\/+$/, '')}/close`;
       this.bridgeSid = null;
-      void fetch('/api/tty-bridge/close', {
+      void fetch(closeUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sid }),
@@ -456,6 +458,15 @@ export class GapWorkbenchEngine {
     const abort = new AbortController();
     this.bridgeAbort = abort;
 
+    const hasSwBridge =
+      typeof navigator !== 'undefined' && Boolean(navigator.serviceWorker?.controller);
+    const baseUrl = import.meta.env.BASE_URL || './';
+    const cleanBase = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+    const bridgeBaseUrl = hasSwBridge
+      ? new URL(`${cleanBase}__tty_bridge__`, window.location.href).href.replace(/\/+$/, '')
+      : '/api/tty-bridge';
+    this.bridgeBaseUrl = bridgeBaseUrl;
+
     const fromWorkerBuf: number[] = [];
     const toWorkerBuf: number[] = [];
     let pendingWaiter: (() => void) | null = null;
@@ -481,18 +492,6 @@ export class GapWorkbenchEngine {
         w();
       }
     });
-
-    worker.onmessage = (ev: MessageEvent) => {
-      const d = ev.data;
-      if (d && typeof d === 'object' && d.ttyRequestType === 'write') {
-        if (Array.isArray(d.buf)) {
-          fromWorkerBuf.push(...d.buf);
-          feedFromWorker();
-        }
-        return;
-      }
-      this.handleWorkerMessage(ev);
-    };
 
     const termiosToData = (t: PtyTermios): number[] => {
       const e = [t.iflag, t.oflag, t.cflag, t.lflag];
@@ -534,6 +533,27 @@ export class GapWorkbenchEngine {
       return new Ctor(t[0] || 0, t[1] || 0, t[2] || 0, t[3] || 0, cc);
     };
 
+    worker.onmessage = (ev: MessageEvent) => {
+      const d = ev.data;
+      if (d && typeof d === 'object') {
+        if (d.ttyRequestType === 'write') {
+          if (Array.isArray(d.buf)) {
+            fromWorkerBuf.push(...d.buf);
+            feedFromWorker();
+          }
+          return;
+        }
+        if (d.ttyRequestType === 'tcsets') {
+          if (Array.isArray(d.data)) {
+            const sample = slave.ioctl('TCGETS');
+            slave.ioctl('TCSETS', dataToTermios(d.data, sample));
+          }
+          return;
+        }
+      }
+      this.handleWorkerMessage(ev);
+    };
+
     const waitForReadable = (timeoutSec: number): Promise<boolean> => {
       if (toWorkerBuf.length > 0) return Promise.resolve(true);
       if (timeoutSec === 0) return Promise.resolve(false);
@@ -564,7 +584,7 @@ export class GapWorkbenchEngine {
             await waitForReadable(-1);
           }
           if (abort.signal.aborted) return;
-          const maxLen = Math.min(req.length || 63, toWorkerBuf.length);
+          const maxLen = Math.min(req.length || 256, toWorkerBuf.length);
           const chunk = toWorkerBuf.splice(0, maxLen);
           streamData = [chunk.length, ...chunk];
           break;
@@ -572,7 +592,12 @@ export class GapWorkbenchEngine {
         case 'poll': {
           const ok = await waitForReadable(req.timeout ?? -1);
           if (abort.signal.aborted) return;
-          streamData = [ok ? 1 : 2];
+          if (ok && toWorkerBuf.length > 0) {
+            const chunk = toWorkerBuf.splice(0, Math.min(256, toWorkerBuf.length));
+            streamData = [1, chunk.length, ...chunk];
+          } else {
+            streamData = [ok ? 1 : 2];
+          }
           break;
         }
         case 'tcgets': {
@@ -595,7 +620,7 @@ export class GapWorkbenchEngine {
       }
 
       if (abort.signal.aborted) return;
-      await fetch('/api/tty-bridge/res', {
+      await fetch(`${bridgeBaseUrl}/res`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sid, reqId, streamData }),
@@ -606,14 +631,17 @@ export class GapWorkbenchEngine {
     const pollLoop = async () => {
       while (!abort.signal.aborted) {
         try {
-          const r = await fetch('/api/tty-bridge/next', {
+          const r = await fetch(`${bridgeBaseUrl}/next`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sid }),
             signal: abort.signal,
           });
+          if (r.status === 404 || r.status === 405) {
+            break;
+          }
           if (!r.ok) {
-            await new Promise((res) => setTimeout(res, 250));
+            await new Promise((res) => setTimeout(res, r.status === 429 ? 500 : 250));
             continue;
           }
           const data = (await r.json()) as {
@@ -633,7 +661,13 @@ export class GapWorkbenchEngine {
     };
 
     void pollLoop();
-    worker.postMessage({ type: 'tty-bridge-start', sid });
+    worker.postMessage({
+      type: 'tty-bridge-start',
+      sid,
+      bridgeBaseUrl,
+      termios: termiosToData(slave.ioctl('TCGETS')),
+      winsize: slave.ioctl('TIOCGWINSZ'),
+    });
   }
 
   private handleWorkerMessage(ev: MessageEvent): void {
@@ -838,7 +872,8 @@ export class GapWorkbenchEngine {
         return btoa(bin);
       };
       try {
-        await fetch('/api/tty-bridge/upload', {
+        const uploadUrl = `${this.bridgeBaseUrl.replace(/\/+$/, '')}/upload`;
+        await fetch(uploadUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
