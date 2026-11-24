@@ -258,6 +258,15 @@ self.Module.preRun.push(function() {
                 stage: "Mounting GAP library & Semigroups package…"
             });
 
+            let hasLocalFsTree = false;
+            try {
+                const probeRes = await fetch(physicalDir + 'lib/matobjgeneric.gd', { method: 'HEAD' });
+                hasLocalFsTree = probeRes.ok;
+            } catch (e) {
+                hasLocalFsTree = false;
+            }
+            const lazyBaseDir = hasLocalFsTree ? physicalDir : UPSTREAM_GAP_FS_BASE;
+
             const writtenFiles = new Set();
             if (bundleMap) {
                 const bundleKeys = Object.keys(bundleMap);
@@ -271,42 +280,62 @@ self.Module.preRun.push(function() {
                 }
             }
 
-            const fallbackFetchPromises = [];
+            const fetchWithBackoff = async (url, opts) => {
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    const res = await fetch(url, opts);
+                    if (res.status === 429 || res.status === 503) {
+                        await new Promise((r) => setTimeout(r, 300 * Math.pow(2, attempt)));
+                        continue;
+                    }
+                    return res;
+                }
+                return fetch(url, opts);
+            };
+
+            const fallbackQueue = [];
+            const enqueueStartupFetch = (appPath) => {
+                const fetchRelativePath = appPath.split('/').map(encodeURIComponent).join('/');
+                fallbackQueue.push(async () => {
+                    try {
+                        let response = null;
+                        if (hasLocalFsTree) {
+                            response = await fetchWithBackoff(physicalDir + fetchRelativePath);
+                        }
+                        if (!response || !response.ok) {
+                            response = await fetchWithBackoff(UPSTREAM_GAP_FS_BASE + fetchRelativePath, {
+                                mode: "cors",
+                                credentials: "omit"
+                            });
+                        }
+                        if (!response || !response.ok) return;
+                        const buffer = await response.arrayBuffer();
+                        ensureParentDir(appPath);
+                        FS.writeFile('/' + appPath, new Uint8Array(buffer));
+                        writtenFiles.add(appPath);
+                    } catch (fetchErr) {
+                        console.warn("Skipping startup file " + appPath + ":", fetchErr);
+                    }
+                });
+            };
+
             for (let i = 0; i < fileList.length; i++) {
                 const appPath = fileList[i];
                 if (writtenFiles.has(appPath)) continue;
 
                 const fetchRelativePath = appPath.split('/').map(encodeURIComponent).join('/');
-                const fetchPath = physicalDir + fetchRelativePath;
+                const lazyUrl = lazyBaseDir + fetchRelativePath;
 
                 if (startupSet.has(appPath)) {
                     if (bundleMap) {
                         // Excluded optional package not present in startup bundle
                         continue;
                     }
-                    fallbackFetchPromises.push((async () => {
-                        try {
-                            let response = await fetch(fetchPath);
-                            if (!response.ok) {
-                                response = await fetch(UPSTREAM_GAP_FS_BASE + fetchRelativePath, {
-                                    mode: "cors",
-                                    credentials: "omit"
-                                });
-                            }
-                            if (!response.ok) return;
-                            const buffer = await response.arrayBuffer();
-                            ensureParentDir(appPath);
-                            FS.writeFile('/' + appPath, new Uint8Array(buffer));
-                            writtenFiles.add(appPath);
-                        } catch (fetchErr) {
-                            console.warn("Skipping startup file " + fetchPath + ":", fetchErr);
-                        }
-                    })());
+                    enqueueStartupFetch(appPath);
                 } else {
                     const parts = appPath.split('/');
                     const fileName = parts.pop();
                     const parentDir = '/' + parts.join('/');
-                    FS.createLazyFile(parentDir, fileName, fetchPath, true, false);
+                    FS.createLazyFile(parentDir, fileName, lazyUrl, true, false);
                 }
             }
 
@@ -314,28 +343,20 @@ self.Module.preRun.push(function() {
             if (!bundleMap) {
                 startupSet.forEach((appPath) => {
                     if (writtenFiles.has(appPath)) return;
-                    const fetchRelativePath = appPath.split('/').map(encodeURIComponent).join('/');
-                    const fetchPath = physicalDir + fetchRelativePath;
-                    fallbackFetchPromises.push((async () => {
-                        try {
-                            let response = await fetch(fetchPath);
-                            if (!response.ok) {
-                                response = await fetch(UPSTREAM_GAP_FS_BASE + fetchRelativePath, {
-                                    mode: "cors",
-                                    credentials: "omit"
-                                });
-                            }
-                            if (!response.ok) return;
-                            const buffer = await response.arrayBuffer();
-                            ensureParentDir(appPath);
-                            FS.writeFile('/' + appPath, new Uint8Array(buffer));
-                        } catch (e) {}
-                    })());
+                    enqueueStartupFetch(appPath);
                 });
             }
 
-            if (fallbackFetchPromises.length > 0) {
-                await Promise.all(fallbackFetchPromises);
+            if (fallbackQueue.length > 0) {
+                const concurrency = 6;
+                let cursor = 0;
+                const workers = Array.from({ length: Math.min(concurrency, fallbackQueue.length) }, async () => {
+                    while (cursor < fallbackQueue.length) {
+                        const idx = cursor++;
+                        await fallbackQueue[idx]();
+                    }
+                });
+                await Promise.all(workers);
             }
 
             self.postMessage({
