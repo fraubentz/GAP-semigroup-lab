@@ -73,13 +73,15 @@ async function main() {
       }
     }
 
-    // 4. Download and extract Semigroups package into dist/gap/pkg/semigroups
+    // 4. Download and extract Semigroups package into dist/gap/pkg/semigroups (and pkg/semigrp alias)
     console.log('Downloading Semigroups 5.7.1 package...');
     const semiArchive = path.join(tmpDir, 'semigroups.tar.gz');
     const semiDir = path.join(DIST_GAP, 'pkg', 'semigroups');
+    const semiAliasDir = path.join(DIST_GAP, 'pkg', 'semigrp');
     await fsp.mkdir(semiDir, { recursive: true });
     await downloadToFile(SEMIGROUPS_TARBALL_URL, semiArchive);
     await execFileAsync('tar', ['-xzf', semiArchive, '--strip-components=1', '-C', semiDir]);
+    await fsp.cp(semiDir, semiAliasDir, { recursive: true, force: true });
 
     // 5. Build dist/gap/startup-bundle.json for single-request startup
     console.log('Building dist/gap/startup-bundle.json...');

@@ -322,7 +322,11 @@ self.Module.preRun.push(function() {
                 const appPath = fileList[i];
                 if (writtenFiles.has(appPath)) continue;
 
-                const fetchRelativePath = appPath.split('/').map(encodeURIComponent).join('/');
+                const normalizedPath =
+                    hasLocalFsTree && appPath.startsWith('pkg/semigrp/')
+                        ? 'pkg/semigroups/' + appPath.slice('pkg/semigrp/'.length)
+                        : appPath;
+                const fetchRelativePath = normalizedPath.split('/').map(encodeURIComponent).join('/');
                 const lazyUrl = lazyBaseDir + fetchRelativePath;
 
                 if (startupSet.has(appPath)) {
